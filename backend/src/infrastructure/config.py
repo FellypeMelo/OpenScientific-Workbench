@@ -62,6 +62,21 @@ class Settings(BaseSettings):
     # --- Secrets manager (Fase 4 - Vault) ---
     VAULT_ADDR: str = "http://localhost:8200"
     VAULT_TOKEN: Optional[str] = None
+    # Name of the Vault SSH secrets engine role (see `vault write ssh/roles/<name>`)
+    # used to request ephemeral, one-time-password SSH credentials. Not a secret
+    # itself (just an identifier), so it gets a safe non-`None` default like
+    # `NEO4J_USER` above.
+    VAULT_SSH_ROLE: str = "hpc-ssh-role"
+
+    # --- HPC / Slurm dispatch (Fase 4 - paramiko SSH) ---
+    # Real `sbatch` dispatch over SSH (see `infrastructure/hpc/slurm_dispatcher.py`)
+    # is only attempted when ALL THREE of these are configured. Any one of them
+    # missing means "no real HPC gateway is reachable from here" (a fresh
+    # checkout, CI runner, or local dev machine), so the dispatcher falls back to
+    # its deterministic mock job id instead of failing or silently doing nothing.
+    SLURM_SSH_HOST: Optional[str] = None
+    SLURM_SSH_USER: Optional[str] = None
+    SLURM_SSH_KEY_PATH: Optional[str] = None
 
     # --- Auth (Fase 2 - JWT middleware) ---
     # No insecure default is supplied on purpose. Left `Optional`/`None` so importing

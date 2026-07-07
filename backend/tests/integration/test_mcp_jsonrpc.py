@@ -5,7 +5,16 @@ from src.infrastructure.mcp.server_registry import MCPServerRegistry
 @pytest.mark.asyncio
 async def test_mcp_jsonrpc_roundtrip():
     registry = MCPServerRegistry()
-    
+
+    # `route()` consults `registry.registry` for a real handler rather than
+    # faking success for any tool name, so a handler must be registered first
+    # -- exactly as a real local/remote MCP server backing this tool would be.
+    def execute_sandbox_python(arguments):
+        script = arguments.get("script_content", "")
+        return f"Processed script successfully: {len(script)} bytes."
+
+    registry.register_server("execute_sandbox_python", execute_sandbox_python)
+
     # Simulate a JSON-RPC 2.0 tool call request
     jsonrpc_request = {
         "jsonrpc": "2.0",

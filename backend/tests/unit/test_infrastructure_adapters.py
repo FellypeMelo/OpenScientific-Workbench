@@ -42,9 +42,29 @@ async def test_slurm_dispatcher_mock():
 
 @pytest.mark.asyncio
 async def test_mcp_server_registry_route():
+    # `route()` now actually consults `self.registry` instead of returning a
+    # hardcoded success string for any tool name -- a handler must be
+    # registered first, exactly as a real local/remote MCP server would be.
     registry = MCPServerRegistry()
+
+    def execute_sandbox_python(arguments):
+        script = arguments.get("script_content", "")
+        return f"Processed script successfully: {len(script)} bytes."
+
+    registry.register_server("execute_sandbox_python", execute_sandbox_python)
+
     out = await registry.route("execute_sandbox_python", {"script_content": "print('hello')"})
     assert "Processed script successfully" in out
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_registry_route_unregistered_tool_is_explicit():
+    # An unregistered tool must get a clear "not implemented" style response,
+    # not a hardcoded string implying real execution happened.
+    registry = MCPServerRegistry()
+    out = await registry.route("some_unregistered_tool", {"arg": 1})
+    assert "not registered" in out
+    assert "some_unregistered_tool" in out
 
 @pytest.mark.asyncio
 async def test_btrfs_snapshot_manager_fallback():

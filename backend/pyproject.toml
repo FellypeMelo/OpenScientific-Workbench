@@ -34,3 +34,12 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+# `TestClient` (starlette.testclient) runs the ASGI app in a background OS thread
+# (anyio blocking portal) for every request, and SQLAlchemy's async engine bridges
+# to its sync DBAPI drivers (aiosqlite/asyncpg) via `greenlet` context switches.
+# Without declaring both concurrency libraries, coverage.py silently stops tracing
+# a coroutine's frame the moment it resumes after a real DB await, under-reporting
+# every line that follows an `await session.execute(...)`-style call.
+concurrency = ["greenlet", "thread"]

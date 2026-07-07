@@ -7,6 +7,7 @@ from src.domain.entities.workspace import Workspace
 from src.domain.entities.agent_session import AgentSession
 from src.infrastructure.persistence.models import Base, UserModel
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
+from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
 from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorkspaceRepository
 
 @pytest.fixture
@@ -62,3 +63,48 @@ async def test_postgres_repositories_integration(db_session):
     updated_session = await session_repo.get_by_id(session.id)
     assert updated_session.session_status == "DAG_GENERATION"
     assert updated_session.dag_snapshot == {"completed": False}
+
+
+@pytest.mark.asyncio
+async def test_postgres_user_repository_get_by_id_missing_returns_none(db_session):
+    user_repo = PostgresUserRepository(db_session)
+    assert await user_repo.get_by_id(uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_user_repository_save_inserts_then_updates(db_session):
+    user_repo = PostgresUserRepository(db_session)
+
+    user = User(email="researcher@osw.org")
+    await user_repo.save(user)
+
+    persisted = await user_repo.get_by_id(user.id)
+    assert persisted is not None
+    assert persisted.email == "researcher@osw.org"
+    assert persisted.iam_role == "scientist"
+
+    # Saving again with the same id updates the existing row instead of inserting
+    # a second one (exercises the "model already exists" branch of save()).
+    persisted.iam_role = "admin"
+    await user_repo.save(persisted)
+
+    updated = await user_repo.get_by_id(user.id)
+    assert updated.iam_role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_postgres_workspace_repository_save_updates_existing_workspace(db_session):
+    workspace_repo = PostgresWorkspaceRepository(db_session)
+
+    user_id = uuid4()
+    workspace = Workspace(owner_id=user_id, fs_mount_path="test_workspace_2")
+    await workspace_repo.save(workspace)
+
+    # Saving again with the same id updates the existing row (exercises the
+    # "model already exists" branch of save()) instead of inserting a duplicate.
+    workspace.is_fork = True
+    await workspace_repo.save(workspace)
+
+    updated = await workspace_repo.get_by_id(workspace.id)
+    assert updated is not None
+    assert updated.is_fork is True

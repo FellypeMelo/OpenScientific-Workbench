@@ -1,12 +1,28 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from src.infrastructure.persistence.database import engine, init_models
 from src.presentation.routes.sessions import router as sessions_router
 from src.presentation.routes.chat import router as chat_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: ensure the ORM tables exist. There is no Alembic migration tool wired
+    # up yet (Fase 1 scope is limited to fiar Postgres na aplicação), so `create_all`
+    # is used to bootstrap a fresh SQLite/Postgres database for local dev and tests.
+    await init_models()
+    yield
+    # Shutdown: dispose the engine's connection pool cleanly.
+    await engine.dispose()
+
 
 app = FastAPI(
     title="OpenScientific-Workbench API Gateway",
     description="Zero-Trust secure agent gateway for executing remote bioinformatics workflows.",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Global Error Handler (Matches error_catalog.md guidelines)

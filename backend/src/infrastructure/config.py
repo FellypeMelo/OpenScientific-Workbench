@@ -28,6 +28,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Runtime environment (Fase 2 - middleware) ---
+    # Drives safety-critical branching in the JWT middleware (see
+    # `presentation/middleware/jwt_auth.py`): a missing `JWT_SECRET` is tolerated
+    # (with a loud warning + ephemeral fallback) everywhere except `"production"`,
+    # where it instead raises at startup. Real deployments MUST set
+    # `ENV=production` explicitly via the environment; the default here is the
+    # permissive one on purpose so a fresh checkout / CI runner / local dev server
+    # boots without any `.env` file.
+    ENV: str = "development"
+
     # --- Relational persistence (Fase 1 - Postgres wiring) ---
     # Defaults to a local SQLite file (via aiosqlite) so the app and test suite can
     # boot without a running Postgres instance. Override with a
@@ -36,6 +46,9 @@ class Settings(BaseSettings):
 
     # --- Cache / rate limiting (Fase 2 - middleware) ---
     REDIS_URL: str = "redis://localhost:6379/0"
+    # Fixed-window request budget enforced by `presentation/middleware/rate_limit.py`.
+    RATE_LIMIT_REQUESTS: int = 100
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
 
     # --- Knowledge graph (Fase 4 - GraphRAG) ---
     NEO4J_URI: str = "bolt://localhost:7687"

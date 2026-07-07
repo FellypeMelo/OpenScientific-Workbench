@@ -14,6 +14,12 @@ from uuid import uuid4
 
 from src.presentation.main import app
 from src.infrastructure.persistence.models import UserModel, WorkspaceModel, AgentSessionModel
+from src.presentation.middleware.jwt_auth import create_access_token
+
+# Every route is now behind the globally-registered JWT auth middleware (Fase 2).
+# There is no login endpoint yet, so tests mint their own token via the same helper
+# the middleware ships for this purpose -- see `presentation/middleware/jwt_auth.py`.
+_AUTH_HEADERS = {"Authorization": f"Bearer {create_access_token(uuid4(), iam_role='scientist')}"}
 
 
 def test_create_then_fetch_session_round_trips_through_real_repositories():
@@ -26,6 +32,7 @@ def test_create_then_fetch_session_round_trips_through_real_repositories():
         create_response = client.post(
             "/api/v1/sessions",
             json={"user_id": str(user_id), "workspace_id": str(workspace_id)},
+            headers=_AUTH_HEADERS,
         )
         assert create_response.status_code == 201
         created = create_response.json()
@@ -34,7 +41,7 @@ def test_create_then_fetch_session_round_trips_through_real_repositories():
 
         session_id = created["id"]
 
-        fetch_response = client.get(f"/api/v1/sessions/{session_id}")
+        fetch_response = client.get(f"/api/v1/sessions/{session_id}", headers=_AUTH_HEADERS)
         assert fetch_response.status_code == 200
         fetched = fetch_response.json()
 
@@ -46,7 +53,7 @@ def test_create_then_fetch_session_round_trips_through_real_repositories():
 
 def test_get_session_not_found_returns_404():
     with TestClient(app) as client:
-        response = client.get(f"/api/v1/sessions/{uuid4()}")
+        response = client.get(f"/api/v1/sessions/{uuid4()}", headers=_AUTH_HEADERS)
         assert response.status_code == 404
 
 
@@ -67,6 +74,7 @@ async def test_create_session_persists_user_and_workspace_rows(_isolated_test_da
         response = client.post(
             "/api/v1/sessions",
             json={"user_id": str(user_id), "workspace_id": str(workspace_id)},
+            headers=_AUTH_HEADERS,
         )
         assert response.status_code == 201
 

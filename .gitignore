@@ -48,6 +48,9 @@ pnpm-debug.log*
 .env.production.local
 *.env
 *.env.*
+# ...but keep committed example/template files (no real secrets in these)
+!.env.example
+!**/.env.example
 
 # OS
 .DS_Store

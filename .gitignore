@@ -79,6 +79,12 @@ data/
 neo4j/data/
 pgdata/
 
+# Kubernetes: a real, filled-in Secret manifest must never be committed --
+# only the documented `.example` template (k8s/secret.yaml.example) is meant
+# to be tracked. Mirrors the `.env`/`!.env.example` pattern above.
+k8s/secret.yaml
+k8s/*.secret.yaml
+
 # OSW Sandbox Workspace / Temporary files
 osw_workspace/
 workspace_*/

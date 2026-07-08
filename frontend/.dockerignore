@@ -1,0 +1,28 @@
+# Reinstalled fresh inside the image (see frontend/Dockerfile's `deps` stage) --
+# never trust a host-platform node_modules tree inside a Linux container.
+node_modules/
+
+# Rebuilt inside the image; a stale host build must never leak in.
+.next/
+out/
+
+# Playwright E2E specs (a separate suite from the Vitest unit tests) and their
+# local report/artifact output -- irrelevant to the runtime image.
+tests/e2e/
+playwright-report/
+test-results/
+coverage/
+
+# Local env overrides / secrets -- only NEXT_PUBLIC_* build args and runtime
+# env vars set by docker-compose.prod.yml / k8s are meant to reach the image.
+.env
+.env.*
+!.env.example
+
+# Editor/VCS metadata and local caches.
+.git/
+.gitignore
+.idea/
+.vscode/
+*.tsbuildinfo
+.turbo/

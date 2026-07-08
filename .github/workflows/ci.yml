@@ -36,7 +36,12 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # pnpm 11.5.0 (pinned below) requires Node >=22.13 -- it imports the
+          # `node:sqlite` builtin at startup, which doesn't exist before that
+          # version. Verified by an actual `docker build` under node:20-alpine
+          # failing with `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite` (see
+          # frontend/Dockerfile's comment) -- this runner needs the same bump.
+          node-version: "22"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3

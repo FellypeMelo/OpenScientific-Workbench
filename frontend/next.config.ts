@@ -1,6 +1,19 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Containerized deployment (Fase 6 - gap closure): emit the minimal
+  // `.next/standalone` server bundle (just the traced production
+  // `node_modules` subset + a small `server.js`) instead of requiring the
+  // full `node_modules` tree + source in the runtime image. See
+  // `frontend/Dockerfile`'s `runner` stage, which runs
+  // `node .next/standalone/server.js` (NOT `next start` -- Next.js itself
+  // warns that `next start` does not honor `output: "standalone"`) and
+  // manually copies `public/` + `.next/static/` alongside it, per Next's own
+  // docs (these two directories are deliberately left out of the standalone
+  // trace so they can be served by a CDN instead, when one is in front of
+  // this deployment).
+  output: "standalone",
+
   // `igv`'s package.json advertises a `browser` field (`dist/igv.js`, a UMD
   // bundle targeting `<script>`/global usage) as well as a `module` field
   // (`dist/igv.esm.js`, a real ES module with a clean `export default`).

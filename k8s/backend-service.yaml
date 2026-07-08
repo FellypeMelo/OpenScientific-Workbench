@@ -1,0 +1,18 @@
+# ClusterIP only -- no Ingress is included in this MVP (see k8s/README.md).
+# The frontend reaches this Service in-cluster at
+# `http://osw-backend.<namespace>.svc.cluster.local:8000`; a browser cannot
+# reach it directly without an Ingress/LoadBalancer added on top.
+apiVersion: v1
+kind: Service
+metadata:
+  name: osw-backend
+  labels:
+    app: osw-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: osw-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,40 @@
+# Never bake local virtualenvs, caches, or secrets into the build context.
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tests are not needed inside the runtime image; keeps it slim and avoids
+# shipping fixtures/mocks alongside real application code.
+tests/
+
+# Local dev artifacts.
+osw_dev.db
+*.db
+*.sqlite
+*.sqlite3
+locustfile.py
+
+# Secrets / local env overrides -- only the committed `.env.example` template
+# should ever be relevant to the image, and even that is not copied in.
+.env
+.env.*
+!.env.example
+
+# VCS / editor metadata.
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Packaging leftovers from local `pip install -e .` runs.
+src/*.egg-info/
+*.egg-info/
+build/
+dist/

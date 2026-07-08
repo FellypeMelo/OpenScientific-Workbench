@@ -71,7 +71,9 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # pnpm 11.5.0 (pinned below) requires Node >=22.13 -- see the same
+          # note in ci.yml / frontend/Dockerfile.
+          node-version: "22"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3

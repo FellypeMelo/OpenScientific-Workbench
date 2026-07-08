@@ -93,6 +93,21 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
+    # --- CORS (Fase 5 - frontend gap closure) ---
+    # The Next.js frontend (`frontend/`) runs on its own origin (`next dev`
+    # defaults to `http://localhost:3000`), distinct from this API's origin --
+    # without `CORSMiddleware` (see `presentation/main.py`), every browser
+    # fetch from it would be blocked, and any request carrying a custom header
+    # (this API requires `Authorization: Bearer <token>` on nearly every
+    # route) triggers a CORS preflight `OPTIONS` request that has no bearer
+    # token at all. Comma-separated so multiple deployed frontend origins can
+    # be configured without code changes.
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
+
 
 # Module-level singleton. `Settings()` instantiation must never raise (see class
 # docstring above), so importing `settings` is safe anywhere in the codebase.

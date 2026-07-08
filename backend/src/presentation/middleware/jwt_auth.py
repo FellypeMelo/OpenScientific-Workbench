@@ -1,11 +1,14 @@
 """
 JWT bearer-token verification middleware (Fase 2 - security middleware).
 
-This module implements an API-gateway-style verification layer: it does NOT issue
-tokens (there is no login endpoint in this codebase yet -- see Fase 5 in
-`docs/planning/execution_plan_gap_closure.md`). Tokens are assumed to be minted
-elsewhere (a future auth service / login endpoint, or -- for now -- the
-`create_access_token` helper below, used directly by tests).
+This module implements an API-gateway-style verification layer: it does NOT
+itself decide *who* is trustworthy, it only verifies a bearer token's
+signature/expiry once minted. Token issuance lives in
+`presentation/routes/auth.py` (a minimal dev-mode/demo endpoint added in Fase 5
+-- see `docs/planning/execution_plan_gap_closure.md` -- appropriate for a BYOK
+internal tool, not a production multi-tenant login system). Tests mint tokens
+directly via the `create_access_token` helper below instead of going through
+HTTP.
 
 Design notes:
 - Applied globally via `app.add_middleware(JWTAuthMiddleware)` in
@@ -41,8 +44,16 @@ logger = logging.getLogger(__name__)
 
 # Paths that never require a bearer token. Kept intentionally minimal: FastAPI's
 # built-in interactive docs / schema routes, so `TestClient`/browsers can reach them
-# without a token. Do NOT add application routes here -- auth must apply globally.
-UNAUTHENTICATED_PATHS: Tuple[str, ...] = ("/docs", "/openapi.json", "/redoc")
+# without a token, PLUS the dev-mode token issuance endpoint itself
+# (`presentation/routes/auth.py`) -- a chicken-and-egg exception: a client cannot
+# be required to already hold a bearer token in order to obtain its first one.
+# Do NOT add any other application route here -- auth must apply globally.
+UNAUTHENTICATED_PATHS: Tuple[str, ...] = (
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/api/v1/auth/token",
+)
 
 
 def _resolve_signing_secret() -> str:

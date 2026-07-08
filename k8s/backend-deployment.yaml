@@ -1,0 +1,61 @@
+# MVP Deployment for the OSW FastAPI backend (see k8s/README.md for the full
+# scope boundary -- no resource requests/limits, HPA, or PodDisruptionBudget
+# yet; those are explicitly deferred future work, not oversights).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osw-backend
+  labels:
+    app: osw-backend
+spec:
+  # Safe to run >1 replica: request-scoped state lives in Postgres/Neo4j, not
+  # in-process (see `backend/src/infrastructure/persistence/database.py`).
+  # The one thing that MUST be true for multi-replica correctness is a shared,
+  # explicit `JWT_SECRET` (see the big comment in `secret.yaml.example`) --
+  # without it every pod would mint/verify tokens with its own random secret.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: osw-backend
+  template:
+    metadata:
+      labels:
+        app: osw-backend
+    spec:
+      containers:
+        - name: backend
+          # Placeholder image ref -- build `backend/Dockerfile`, push it to
+          # your registry, and point this at the real `repo/osw-backend:tag`.
+          image: osw-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: osw-backend-config
+            - secretRef:
+                name: osw-backend-secrets
+          # No `/health` route exists yet (see
+          # `presentation/middleware/jwt_auth.py`'s `UNAUTHENTICATED_PATHS`
+          # docstring) -- `/openapi.json` is one of the few routes the JWT
+          # middleware allowlists unauthenticated, and only serves 200 once
+          # the FastAPI `lifespan` startup step (DB table creation) has
+          # completed. Mirrors the same probe used by `backend/Dockerfile`'s
+          # own `HEALTHCHECK`.
+          readinessProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /openapi.json
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          # Deliberately no `resources:` block yet -- see k8s/README.md's
+          # scope boundary. Tune this before running in a real cluster.

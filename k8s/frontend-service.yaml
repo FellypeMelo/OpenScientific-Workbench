@@ -1,0 +1,18 @@
+# ClusterIP only -- no Ingress is included in this MVP (see k8s/README.md).
+# Without an Ingress/LoadBalancer added on top, this Service is only
+# reachable in-cluster (e.g. via `kubectl port-forward` for a quick manual
+# check), not from a real browser.
+apiVersion: v1
+kind: Service
+metadata:
+  name: osw-frontend
+  labels:
+    app: osw-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: osw-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

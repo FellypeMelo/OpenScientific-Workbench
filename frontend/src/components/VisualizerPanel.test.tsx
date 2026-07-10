@@ -12,6 +12,9 @@ vi.mock("./IGVViewer", () => ({
     <div data-testid="mock-igv" data-genome={props.genome ?? ""} data-locus={props.locus ?? ""} />
   ),
 }));
+vi.mock("./ManuscriptEditor", () => ({
+  ManuscriptEditor: () => <div data-testid="mock-manuscript" />,
+}));
 
 import { VisualizerPanel } from "./VisualizerPanel";
 
@@ -49,5 +52,19 @@ describe("VisualizerPanel", () => {
     render(<VisualizerPanel />);
     // No pdbId threaded -> the viewer receives undefined and applies its default.
     expect(await screen.findByTestId("mock-molstar")).toHaveAttribute("data-pdbid", "");
+  });
+
+  it("switches to the manuscript editor tab (RF-008)", async () => {
+    const user = userEvent.setup();
+    render(<VisualizerPanel />);
+
+    expect(screen.queryByTestId("mock-manuscript")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Manuscrito/i }));
+
+    expect(await screen.findByTestId("mock-manuscript")).toBeInTheDocument();
+    // The viewer stage is unmounted while the editor owns the panel body.
+    expect(screen.queryByTestId("mock-molstar")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("mock-igv")).not.toBeInTheDocument();
   });
 });

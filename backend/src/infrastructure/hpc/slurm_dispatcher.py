@@ -41,6 +41,7 @@ import re
 
 import paramiko
 
+from src.domain.entities.job_status import JobStatus
 from src.domain.ports.hpc_job_dispatcher import HPCJobDispatcherPort
 from src.infrastructure.config import settings
 
@@ -51,6 +52,24 @@ _JOB_ID_PATTERN = re.compile(r"Submitted batch job (\d+)")
 
 #: Deterministic placeholder returned when no real SSH gateway is configured.
 _MOCK_JOB_ID = "job_10492"
+
+#: Maps raw Slurm state names (from `squeue -o %T`) to the normalised JobStatus.
+_STATE_MAP = {
+    "PENDING": JobStatus.PENDING,
+    "CONFIGURING": JobStatus.PENDING,
+    "RUNNING": JobStatus.RUNNING,
+    "COMPLETING": JobStatus.RUNNING,
+    "COMPLETED": JobStatus.COMPLETED,
+    "FAILED": JobStatus.FAILED,
+    "NODE_FAIL": JobStatus.FAILED,
+    "TIMEOUT": JobStatus.FAILED,
+    "OUT_OF_MEMORY": JobStatus.FAILED,
+    "CANCELLED": JobStatus.CANCELLED,
+}
+
+
+def _parse_slurm_state(raw_state: str) -> JobStatus:
+    return _STATE_MAP.get(raw_state.strip().upper(), JobStatus.UNKNOWN)
 
 
 class SlurmSSHDispatcher(HPCJobDispatcherPort):
@@ -92,6 +111,84 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
             return _MOCK_JOB_ID
 
         return await asyncio.to_thread(self._dispatch_sync, sbatch_script)
+
+    def _connect(self) -> paramiko.SSHClient:
+        """Opens a connected SSHClient using the configured key (shared by
+        dispatch / poll / SFTP). See the module docstring for the host-key policy."""
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=self.ssh_host,
+            username=self.ssh_user,
+            key_filename=self.ssh_key_path,
+            timeout=15,
+        )
+        return client
+
+    async def poll_status(self, job_id: str) -> JobStatus:
+        """Queries the cluster for a job's current status (RF-006).
+
+        Returns ``JobStatus.UNKNOWN`` when no real gateway is configured (mirrors
+        dispatch's mock fallback), so callers on a fresh checkout/CI never crash.
+        """
+        if not self._is_configured:
+            logger.warning(
+                "SlurmSSHDispatcher.poll_status: no SSH gateway configured; "
+                "returning JobStatus.UNKNOWN for job %r.", job_id,
+            )
+            return JobStatus.UNKNOWN
+        return await asyncio.to_thread(self._poll_status_sync, job_id)
+
+    def _poll_status_sync(self, job_id: str) -> JobStatus:
+        client = self._connect()
+        try:
+            stdin, stdout, stderr = client.exec_command(
+                f"squeue -h -j {job_id} -o %T", timeout=30
+            )
+            exit_status = stdout.channel.recv_exit_status()
+            out = stdout.read().decode("utf-8", errors="replace").strip()
+            err = stderr.read().decode("utf-8", errors="replace")
+
+            if exit_status != 0:
+                raise RuntimeError(
+                    f"squeue failed for job {job_id} on {self.ssh_host}: {err.strip()}"
+                )
+            # An empty squeue result means the job has left the queue -- i.e. it
+            # finished (or was purged). Treat that as COMPLETED.
+            if not out:
+                return JobStatus.COMPLETED
+            return _parse_slurm_state(out.splitlines()[0])
+        finally:
+            client.close()
+
+    async def upload_file(self, local_path: str, remote_path: str) -> None:
+        """Stages a local input file onto the cluster over SFTP (RF-006)."""
+        if not self._is_configured:
+            logger.warning("SlurmSSHDispatcher.upload_file: no gateway configured; skipping.")
+            return
+        await asyncio.to_thread(self._sftp_transfer, "put", local_path, remote_path)
+
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Fetches a produced output file back from the cluster over SFTP (RF-006)."""
+        if not self._is_configured:
+            logger.warning("SlurmSSHDispatcher.download_file: no gateway configured; skipping.")
+            return
+        await asyncio.to_thread(self._sftp_transfer, "get", remote_path, local_path)
+
+    def _sftp_transfer(self, direction: str, source: str, dest: str) -> None:
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                if direction == "put":
+                    sftp.put(source, dest)
+                else:
+                    sftp.get(source, dest)
+            finally:
+                sftp.close()
+        finally:
+            client.close()
 
     def _dispatch_sync(self, sbatch_script: str) -> str:
         """Blocking Paramiko implementation, run off the event loop via `to_thread`."""

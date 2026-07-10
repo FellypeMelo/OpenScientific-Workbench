@@ -11,6 +11,9 @@ class AgentSession(BaseModel):
     session_status: str = "INITIALIZING"
     dag_snapshot: Dict[str, Any] = Field(default_factory=dict)
     provenance_log: List[Dict[str, Any]] = Field(default_factory=list)
+    # Number of DAG (re)generation attempts, incremented each actor-critic round
+    # so the retry loop can be bounded (RF-002).
+    dag_generation_attempts: int = 0
 
     # Valid transitions dictionary
     _VALID_TRANSITIONS: Dict[str, List[str]] = {

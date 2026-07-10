@@ -16,6 +16,11 @@ class DAGNode(BaseModel):
     dependencies: List[str] = Field(default_factory=list)
     reward: Optional[float] = None
     status: str = "PENDING"
+    # Actor's produced numeric result and the critic's independently-expected
+    # value, compared by the numeric reviewer (RF-002). Both optional: a node
+    # with no numeric assertion is not gated.
+    output: Optional[Dict[str, Any]] = None
+    expected: Optional[Dict[str, Any]] = None
 
 
 class DAGSnapshot(BaseModel):

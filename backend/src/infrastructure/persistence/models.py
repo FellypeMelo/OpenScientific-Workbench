@@ -1,10 +1,17 @@
 from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import declarative_base, relationship
 import uuid
 import datetime
 
 Base = declarative_base()
+
+# JSONB on PostgreSQL (binary storage + containment/GIN queries for MCTS trees,
+# RF-003) with a plain-JSON fallback on SQLite so the dev/CI test DB still builds.
+# A GIN index on these columns is a Postgres-only optimisation and belongs in an
+# Alembic migration (the live-Postgres track), not in create_all against SQLite.
+_JSONB = JSON().with_variant(JSONB(), "postgresql")
 
 class UserModel(Base):
     __tablename__ = "users"
@@ -30,7 +37,7 @@ class AgentSessionModel(Base):
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(PG_UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"))
     session_status = Column(String(50), default="INITIALIZING")
-    dag_snapshot = Column(JSON, nullable=False, default=dict)
-    provenance_log = Column(JSON, nullable=False, default=list)
+    dag_snapshot = Column(_JSONB, nullable=False, default=dict)
+    provenance_log = Column(_JSONB, nullable=False, default=list)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

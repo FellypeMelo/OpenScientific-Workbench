@@ -72,7 +72,7 @@ class SubmitTaskUseCase:
                 await self.session_repo.save(session)
                 return session
 
-            # Rejected: record and loop back for another attempt.
+            # Rejected: record, persist this checkpoint, then loop back (RF-003).
             session.transition_to("ARTIFACT_REJECTED")
             session.dag_snapshot = snapshot.to_dict()
             session.provenance_log.append({
@@ -83,7 +83,10 @@ class SubmitTaskUseCase:
                 "reason": verdict.reason,
                 "status": "rejected",
             })
+            # Checkpoint each attempt so state is persisted incrementally, not only
+            # once at the very end.
+            await self.session_repo.save(session)
 
-        # Exhausted all attempts without approval; session stays ARTIFACT_REJECTED.
-        await self.session_repo.save(session)
+        # Exhausted all attempts without approval; session stays ARTIFACT_REJECTED
+        # (already persisted by the last loop iteration).
         return session

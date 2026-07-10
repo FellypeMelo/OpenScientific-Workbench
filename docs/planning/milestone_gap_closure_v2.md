@@ -1,5 +1,5 @@
 # Milestone — Gap Closure v2 (Auditoria Real vs. Proposto)
-**ID Documento:** ARCH-PLAN-003 | **Status:** Em execução | **Versão:** 2.0.0
+**ID Documento:** ARCH-PLAN-003 | **Status:** Backlog local concluído | **Versão:** 2.1.0
 **Data:** 2026-07-10 | **Base:** auditoria por requisito contra código real (17 requisitos, 19 agentes) + suite (`122 passed`, Python 3.10 local / CI 3.12)
 
 Este documento substitui a leitura otimista do `validation_checklist.md` ("48/48 ✔️") por um diagnóstico honesto: **os blocos isolados são reais e testados, mas a orquestração agêntica de ponta-a-ponta não existe.** Todo item abaixo tem evidência de arquivo.
@@ -101,7 +101,7 @@ TDD estrito **Red → Green → Refactor**; Clean Architecture (dependências ap
 
 ## 7. Execução concluída (status)
 
-Todo o backlog testável localmente foi implementado via TDD, **um commit atômico por funcionalidade**. Suites finais: **backend 200 passed**, **frontend 38 passed**.
+Todo o backlog testável localmente foi implementado via TDD, **um commit atômico por funcionalidade**. Suites finais: **backend 203 passed**, **frontend 43 passed**, `tsc --noEmit` limpo.
 
 | Item | Commit | Entrega (resumo) |
 | :--- | :--- | :--- |
@@ -120,9 +120,9 @@ Todo o backlog testável localmente foi implementado via TDD, **um commit atômi
 | **RF-003** | `feat(persistence)` | colunas JSONB (variant) + checkpoint saves. |
 | **RAG-MARKER** | `feat(rag)` | `RetrieveContextUseCase` (Neo4j + Qdrant). |
 | **RF-004** | `feat(mcp)` | cliente JSON-RPC 2.0 + adapters UniProt/PDB/STRING. |
-| **RF-008** | `feat(manuscript)` | entidade manuscrito (crítico) + compilador Tectonic. **Falta:** editor frontend (Monaco/CodeMirror) + rota de compilação. |
+| **RF-008** | `feat(manuscript)` ×2 | entidade manuscrito (crítico) + compilador Tectonic; rota `POST /manuscript/compile`; editor LaTeX frontend com correções do crítico aplicáveis in-place + preview PDF. |
 | **RF-007** | `feat(frontend)` | viewers Molstar/IGV recebem `pdbId`/`genome`/`locus` de resultado de job. |
 
-**Único item aberto:** editor de manuscrito frontend (RF-008 UI) — construção de UI nova e grande; ao fazê-lo, aplicar as taste-skills de design.
+**Backlog local fechado:** editor de manuscrito frontend (RF-008 UI) entregue — aba "Manuscrito (LaTeX)" no painel visualizador, textarea mono (KISS, sem Monaco/CodeMirror), sidebar do revisor crítico com correção in-place, `POST /manuscript/compile` + preview PDF com estados idle/compiling/ready/error.
 
 Itens da §5 (infra-bloqueados) permanecem documentados, com a **lógica pura implementada e testada** e o adapter atrás de mock/flag (gVisor runsc, Postgres JSONB/GIN vivo, Vault TTL, cluster Slurm, GPU/Modal, Marker ML).

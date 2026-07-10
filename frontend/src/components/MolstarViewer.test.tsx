@@ -60,6 +60,20 @@ describe("MolstarViewer", () => {
     await waitFor(() => expect(mock.applyPreset).toHaveBeenCalledWith("trajectory", "default"));
   });
 
+  it("derives the RCSB download URL from the pdbId prop (RF-007)", async () => {
+    const mock = buildMockPlugin();
+    vi.mocked(createPluginUI).mockResolvedValue(mock.plugin as never);
+
+    render(<MolstarViewer pdbId="6XYZ" />);
+
+    await waitFor(() =>
+      expect(mock.download).toHaveBeenCalledWith(
+        { url: "https://files.rcsb.org/download/6XYZ.pdb" },
+        { state: { isGhost: true } }
+      )
+    );
+  });
+
   it("disposes the plugin instance on unmount", async () => {
     const mock = buildMockPlugin();
     vi.mocked(createPluginUI).mockResolvedValue(mock.plugin as never);

@@ -3,6 +3,20 @@ export interface Message {
   text: string;
 }
 
+/**
+ * Job-derived data that drives the scientific viewers (RF-007). Populated from a
+ * completed analysis result; when absent, each viewer falls back to its own demo
+ * default (Molstar -> 1CRN, IGV -> hg38 MYC locus).
+ */
+export interface VisualizationResult {
+  /** RCSB PDB id of a produced structure for Mol*. */
+  pdbId?: string;
+  /** Reference genome id for igv.js. */
+  genome?: string;
+  /** Genomic locus for igv.js. */
+  locus?: string;
+}
+
 export interface DAGNode {
   id: string;
   label: string;

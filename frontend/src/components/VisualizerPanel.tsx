@@ -3,6 +3,8 @@
 import { useState } from "react";
 import dynamic from "next/dynamic";
 
+import type { VisualizationResult } from "./types";
+
 // Both viewers touch `window`/WebGL/canvas at plugin-construction time and are
 // heavy (Molstar + igv.js pull in a substantial amount of JS). `next/dynamic`
 // with `ssr: false` keeps them out of the server render entirely (belt and
@@ -26,7 +28,12 @@ const IGVViewer = dynamic(() => import("./IGVViewer").then((mod) => mod.IGVViewe
 
 type Tab = "molstar" | "igv";
 
-export function VisualizerPanel() {
+export interface VisualizerPanelProps {
+  /** Job-derived data to render; falls back to each viewer's demo default. */
+  result?: VisualizationResult;
+}
+
+export function VisualizerPanel({ result }: VisualizerPanelProps = {}) {
   const [activeTab, setActiveTab] = useState<Tab>("molstar");
 
   return (
@@ -58,7 +65,11 @@ export function VisualizerPanel() {
               real WebGL/canvas context (Molstar) or a heavy DOM tree (igv.js),
               so keeping both alive simultaneously would waste GPU contexts and
               double the network fetches for no visible benefit. */}
-          {activeTab === "molstar" ? <MolstarViewer /> : <IGVViewer />}
+          {activeTab === "molstar" ? (
+            <MolstarViewer pdbId={result?.pdbId} />
+          ) : (
+            <IGVViewer genome={result?.genome} locus={result?.locus} />
+          )}
         </div>
       </div>
     </div>

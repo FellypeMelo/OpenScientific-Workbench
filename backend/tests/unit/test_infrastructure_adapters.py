@@ -30,6 +30,11 @@ def test_gvisor_driver_path_traversal():
     with pytest.raises(PermissionError, match="Path traversal or absolute access blocked"):
         driver.execute_python_script("/absolute/path/escape.py")
 
+    # RNF-002 regression: a Windows drive-letter path must be blocked too (the
+    # old '..'/leading-slash denylist let this through).
+    with pytest.raises(PermissionError, match="Path traversal or absolute access blocked"):
+        driver.execute_python_script("C:\\Windows\\System32\\config\\SAM")
+
     # Local fallback output
     out = driver.execute_python_script("correct_script.py")
     assert "Mock execution output" in out

@@ -32,8 +32,11 @@ def test_workspace_path_traversal_rejection():
         "workspace/../../etc",
         "/etc/passwd",
         "workspaces/..",
+        # RNF-002 regression: Windows drive-letter absolute paths were the bypass.
+        "C:/Windows/System32",
+        "C:\\Windows\\System32\\config\\SAM",
     ]
-    
+
     for path in invalid_paths:
         with pytest.raises(ValidationError):
             Workspace(owner_id=owner_id, fs_mount_path=path)

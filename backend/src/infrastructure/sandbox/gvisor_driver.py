@@ -1,6 +1,8 @@
 import subprocess
 import os
 
+from src.domain.services.path_guard import PathTraversalError, ensure_safe_relative_path
+
 class GVisorSandboxDriver:
     """
     Adapter for running code in a secure container sandboxed by gVisor (runsc).
@@ -10,10 +12,14 @@ class GVisorSandboxDriver:
         self.workspace_root = workspace_root
 
     def execute_python_script(self, relative_script_path: str) -> str:
-        # 1. Path Traversal Check (Mitigation for CVE-2026-7398)
-        resolved_path = os.path.normpath(relative_script_path)
-        if ".." in resolved_path or resolved_path.startswith("/") or resolved_path.startswith("\\"):
-            raise PermissionError("FATAL_GVISOR_SYSCALL_HOOK: Path traversal or absolute access blocked.")
+        # 1. Path Traversal Check (Mitigation for CVE-2026-7398). Delegated to the
+        # shared containment guard, which also blocks Windows drive-letter paths.
+        try:
+            resolved_path = ensure_safe_relative_path(relative_script_path)
+        except PathTraversalError as exc:
+            raise PermissionError(
+                "FATAL_GVISOR_SYSCALL_HOOK: Path traversal or absolute access blocked."
+            ) from exc
 
         # In a real environment, we'd run:
         # docker run --runtime=runsc -v host_workspace:/workspace osw-sandbox python /workspace/script.py

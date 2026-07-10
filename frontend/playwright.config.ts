@@ -20,6 +20,10 @@ export default defineConfig({
   webServer: {
     command: 'pnpm run dev',
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    // The e2e workflow pre-starts the frontend (`pnpm run start &`) before invoking
+    // Playwright, so always reuse an already-listening server instead of trying to
+    // spawn a second one on the same port (which fails in CI with "port already used").
+    // When nothing is listening (local runs), Playwright still starts `command`.
+    reuseExistingServer: true,
   },
 })

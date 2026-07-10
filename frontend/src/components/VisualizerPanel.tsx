@@ -3,6 +3,9 @@
 import { useState } from "react";
 import dynamic from "next/dynamic";
 
+import type { VisualizationResult } from "./types";
+import { ManuscriptEditor } from "./ManuscriptEditor";
+
 // Both viewers touch `window`/WebGL/canvas at plugin-construction time and are
 // heavy (Molstar + igv.js pull in a substantial amount of JS). `next/dynamic`
 // with `ssr: false` keeps them out of the server render entirely (belt and
@@ -24,9 +27,14 @@ const IGVViewer = dynamic(() => import("./IGVViewer").then((mod) => mod.IGVViewe
   loading: () => <div className="text-[#707086] text-sm">Carregando trilhas genômicas...</div>,
 });
 
-type Tab = "molstar" | "igv";
+type Tab = "molstar" | "igv" | "manuscript";
 
-export function VisualizerPanel() {
+export interface VisualizerPanelProps {
+  /** Job-derived data to render; falls back to each viewer's demo default. */
+  result?: VisualizationResult;
+}
+
+export function VisualizerPanel({ result }: VisualizerPanelProps = {}) {
   const [activeTab, setActiveTab] = useState<Tab>("molstar");
 
   return (
@@ -50,17 +58,38 @@ export function VisualizerPanel() {
         >
           IGV (Genomic Tracks)
         </button>
+        <button
+          onClick={() => setActiveTab("manuscript")}
+          className={`px-4 py-3 text-sm font-medium transition-all ${
+            activeTab === "manuscript"
+              ? "border-b-2 border-[#86ffcf] text-[#86ffcf]"
+              : "text-[#707086]"
+          }`}
+        >
+          Manuscrito (LaTeX)
+        </button>
       </div>
 
-      <div className="flex-1 relative flex items-center justify-center p-8">
-        <div className="w-full h-full border border-dashed border-[#242435] rounded-xl overflow-hidden bg-[#07070a] shadow-inner">
-          {/* Only the active tab's viewer is mounted at a time -- each owns a
-              real WebGL/canvas context (Molstar) or a heavy DOM tree (igv.js),
-              so keeping both alive simultaneously would waste GPU contexts and
-              double the network fetches for no visible benefit. */}
-          {activeTab === "molstar" ? <MolstarViewer /> : <IGVViewer />}
+      {/* The manuscript editor owns its own full-height chrome (toolbar, split
+          panes), so it renders directly in the panel body. The scientific
+          viewers get the framed dashed-border stage instead. */}
+      {activeTab === "manuscript" ? (
+        <ManuscriptEditor />
+      ) : (
+        <div className="flex-1 relative flex items-center justify-center p-8">
+          <div className="w-full h-full border border-dashed border-[#242435] rounded-xl overflow-hidden bg-[#07070a] shadow-inner">
+            {/* Only the active tab's viewer is mounted at a time -- each owns a
+                real WebGL/canvas context (Molstar) or a heavy DOM tree (igv.js),
+                so keeping both alive simultaneously would waste GPU contexts and
+                double the network fetches for no visible benefit. */}
+            {activeTab === "molstar" ? (
+              <MolstarViewer pdbId={result?.pdbId} />
+            ) : (
+              <IGVViewer genome={result?.genome} locus={result?.locus} />
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,33 @@ export interface Message {
   text: string;
 }
 
+/**
+ * A textual correction raised by the Actor-Critic reviewer (RF-002/RF-008),
+ * attached to a manuscript so the editor can apply it in place.
+ */
+export interface ManuscriptComment {
+  id: string;
+  /** Exact substring in the LaTeX source this comment targets. */
+  targetText: string;
+  /** Replacement text the critic suggests. */
+  suggestion: string;
+  resolved?: boolean;
+}
+
+/**
+ * Job-derived data that drives the scientific viewers (RF-007). Populated from a
+ * completed analysis result; when absent, each viewer falls back to its own demo
+ * default (Molstar -> 1CRN, IGV -> hg38 MYC locus).
+ */
+export interface VisualizationResult {
+  /** RCSB PDB id of a produced structure for Mol*. */
+  pdbId?: string;
+  /** Reference genome id for igv.js. */
+  genome?: string;
+  /** Genomic locus for igv.js. */
+  locus?: string;
+}
+
 export interface DAGNode {
   id: string;
   label: string;

@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { ChatPanel } from "@/components/ChatPanel";
 import { MCTSGraph } from "@/components/MCTSGraph";
 import { VisualizerPanel } from "@/components/VisualizerPanel";
-import { initialDagNodes, type DAGNode } from "@/components/types";
+import { initialDagNodes, type DAGNode, type VisualizationResult } from "@/components/types";
 
 const LOCAL_WORKSPACE_ID_KEY = "osw.workspaceId";
 
@@ -28,6 +28,9 @@ export default function Home() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [dagNodes, setDagNodes] = useState<DAGNode[]>(initialDagNodes);
+  // Job-derived visualization data (RF-007); undefined until an analysis result
+  // arrives, at which point the viewers render it instead of their demo default.
+  const [visualization] = useState<VisualizationResult | undefined>(undefined);
 
   // Guards against React StrictMode's intentional double-invoke of effects in
   // development, which would otherwise provision two sessions for one page
@@ -71,7 +74,7 @@ export default function Home() {
       <ChatPanel sessionId={sessionId} workspaceId={workspaceId} onDagEvent={handleDagEvent} />
 
       {/* Panel 2: Scientific Visualizer Container (Center Panel) */}
-      <VisualizerPanel />
+      <VisualizerPanel result={visualization} />
 
       {/* Panel 3: MCTS Execution DAG tree (Right Panel) */}
       <div

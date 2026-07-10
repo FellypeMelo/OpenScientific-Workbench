@@ -21,16 +21,24 @@ async def test_vault_client_mock():
     token = await client.get_ephemeral_ssh_token("hpc_user")
     assert "ephemeral_mock_ssh_token_hpc_user" in token
 
-def test_gvisor_driver_path_traversal():
+def test_gvisor_driver_path_traversal(monkeypatch):
     driver = GVisorSandboxDriver()
-    
+
     with pytest.raises(PermissionError, match="Path traversal or absolute access blocked"):
         driver.execute_python_script("../escape.py")
-        
+
     with pytest.raises(PermissionError, match="Path traversal or absolute access blocked"):
         driver.execute_python_script("/absolute/path/escape.py")
 
-    # Local fallback output
+    # RNF-002 regression: a Windows drive-letter path must be blocked too (the
+    # old '..'/leading-slash denylist let this through).
+    with pytest.raises(PermissionError, match="Path traversal or absolute access blocked"):
+        driver.execute_python_script("C:\\Windows\\System32\\config\\SAM")
+
+    # Local fallback output. Clear CI so `_execute` takes the mock branch
+    # deterministically -- otherwise GitHub Actions (which sets CI=true) would run
+    # a real `python correct_script.py` subprocess against a non-existent file.
+    monkeypatch.delenv("CI", raising=False)
     out = driver.execute_python_script("correct_script.py")
     assert "Mock execution output" in out
 

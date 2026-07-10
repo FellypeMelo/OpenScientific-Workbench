@@ -2,6 +2,8 @@ from uuid import UUID, uuid4
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
+from src.domain.services.path_guard import PathTraversalError, ensure_safe_relative_path
+
 class Workspace(BaseModel):
     """
     Domain entity representing a user's isolated workspace.
@@ -15,11 +17,9 @@ class Workspace(BaseModel):
     @field_validator("fs_mount_path")
     @classmethod
     def validate_mount_path(cls, value: str) -> str:
-        # Strip trailing/leading whitespace
-        cleaned = value.strip()
-        
-        # Check for path traversal attempts (CWE-22 / CVE-2026-7398)
-        if ".." in cleaned or cleaned.startswith("/") or cleaned.startswith("\\"):
-            raise ValueError("Secure sandbox violation: Absolute paths or path traversal (..) are not allowed.")
-            
-        return cleaned
+        # Strict containment guard (CWE-22 / CVE-2026-7398): rejects traversal and
+        # absolute paths in both POSIX and Windows conventions (incl. C:\ drive).
+        try:
+            return ensure_safe_relative_path(value)
+        except PathTraversalError as exc:
+            raise ValueError(f"Secure sandbox violation: {exc}") from exc

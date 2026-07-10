@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     SLURM_SSH_USER: Optional[str] = None
     SLURM_SSH_KEY_PATH: Optional[str] = None
 
+    # --- Workspace storage (RNF-007 - Btrfs CoW forking) ---
+    # Enables real `btrfs subvolume snapshot` O(1) forks. Defaults to False so
+    # dev/CI (and any non-Btrfs host) uses the recursive-copy fallback; set to
+    # True on a Linux host with a Btrfs-formatted workspace volume. The manager
+    # additionally self-disables off Linux, so enabling it is always safe.
+    USE_BTRFS: bool = False
+
     # --- Auth (Fase 2 - JWT middleware) ---
     # No insecure default is supplied on purpose. Left `Optional`/`None` so importing
     # this module never crashes in dev/CI where no `.env` exists yet; the JWT

@@ -194,6 +194,20 @@ export async function* streamChat(
   }
 }
 
+/**
+ * `POST /api/v1/manuscript/compile` -- see
+ * `backend/src/presentation/routes/manuscript.py`. Returns the compiled PDF as a
+ * Blob; throws `ApiError` (status 503 when tectonic is unavailable, 422 on
+ * invalid LaTeX).
+ */
+export async function compileManuscript(latexSource: string): Promise<Blob> {
+  const response = await apiFetch("/api/v1/manuscript/compile", {
+    method: "POST",
+    body: JSON.stringify({ latex_source: latexSource }),
+  });
+  return response.blob();
+}
+
 export const apiClient = {
   getApiBaseUrl,
   setAuthToken,
@@ -203,6 +217,7 @@ export const apiClient = {
   getSession,
   forkWorkspace,
   streamChat,
+  compileManuscript,
 };
 
 export default apiClient;

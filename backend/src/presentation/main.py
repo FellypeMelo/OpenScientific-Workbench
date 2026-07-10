@@ -12,6 +12,7 @@ from src.presentation.routes.sessions import router as sessions_router
 from src.presentation.routes.chat import router as chat_router
 from src.presentation.routes.auth import router as auth_router
 from src.presentation.routes.workspaces import router as workspaces_router
+from src.presentation.routes.manuscript import router as manuscript_router
 
 
 @asynccontextmanager
@@ -120,3 +121,4 @@ app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
+app.include_router(manuscript_router, prefix="/api/v1")

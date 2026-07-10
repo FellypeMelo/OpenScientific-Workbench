@@ -24,21 +24,33 @@ class GVisorSandboxDriver:
         # In a real environment, we'd run:
         # docker run --runtime=runsc -v host_workspace:/workspace osw-sandbox python /workspace/script.py
         # For local execution without Docker, we can run it as a subprocess (with warning) or mock it
+        # In a real environment, we'd run:
+        # docker run --runtime=runsc -v host_workspace:/workspace osw-sandbox python /workspace/script.py
+        full_path = os.path.join(self.workspace_root, resolved_path)
+        return self._run_or_mock(["python", full_path])
+
+    def execute_bash(self, command: str) -> str:
+        """Runs a bash command in the sandbox (RF-005)."""
+        return self._run_or_mock(["bash", "-c", command])
+
+    def execute_r_script(self, code: str) -> str:
+        """Runs an R snippet in the sandbox (RF-005)."""
+        return self._run_or_mock(["Rscript", "-e", code])
+
+    @staticmethod
+    def _run_or_mock(argv: list) -> str:
+        """Executes ``argv`` as a subprocess under CI; otherwise returns a mock.
+
+        Real gVisor isolation (``docker run --runtime=runsc``) needs a Linux host
+        with the runsc runtime and is out of reach here (RF-005 infra-blocked);
+        this keeps the multi-language execution surface real and testable.
+        """
         if os.getenv("CI") == "true":
-            # Running inside CI E2E environment
-            # Run using python command
-            full_path = os.path.join(self.workspace_root, resolved_path)
             try:
                 result = subprocess.run(
-                    ["python", full_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=True
+                    argv, capture_output=True, text=True, timeout=30, check=True
                 )
                 return result.stdout
             except subprocess.CalledProcessError as e:
                 return f"Execution error: {e.stderr}"
-        else:
-            # Mock success locally
-            return "Mock execution output: 42"
+        return "Mock execution output: 42"

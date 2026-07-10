@@ -50,6 +50,27 @@ async def test_submit_task_runs_orchestrator_and_persists_dag():
 
 
 @pytest.mark.asyncio
+async def test_submit_task_sanitizes_pii_before_writing_provenance():
+    session_repo = MockSessionRepository()
+    session = AgentSession(workspace_id=uuid4())
+    await session_repo.save(session)
+
+    use_case = SubmitTaskUseCase(
+        session_repo=session_repo,
+        orchestrator=FakeOrchestrator(_resolved_snapshot()),
+        default_token_limit=1000,
+    )
+
+    updated = await use_case.execute(
+        session_id=session.id, task_nl="Analyze exome for CPF 123.456.789-00"
+    )
+
+    logged_task = updated.provenance_log[-1]["task"]
+    assert "123.456.789-00" not in logged_task
+    assert "[CPF_MASKED]" in logged_task
+
+
+@pytest.mark.asyncio
 async def test_submit_task_budget_exceeded_before_running_orchestrator():
     session_repo = MockSessionRepository()
     session = AgentSession(workspace_id=uuid4())

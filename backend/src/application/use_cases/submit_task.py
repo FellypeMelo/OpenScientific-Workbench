@@ -4,6 +4,7 @@ from datetime import datetime
 from src.domain.entities.agent_session import AgentSession
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.services.mcts_orchestrator import MCTSOrchestrator
+from src.domain.services.pii_sanitizer import PIISanitizer
 
 
 class SubmitTaskUseCase:
@@ -18,10 +19,12 @@ class SubmitTaskUseCase:
         session_repo: SessionRepositoryPort,
         orchestrator: MCTSOrchestrator,
         default_token_limit: int = 100000,
+        sanitizer: PIISanitizer = None,
     ):
         self.session_repo = session_repo
         self.orchestrator = orchestrator
         self.default_token_limit = default_token_limit
+        self.sanitizer = sanitizer or PIISanitizer()
 
     async def execute(self, session_id: UUID, task_nl: str) -> AgentSession:
         session = await self.session_repo.get_by_id(session_id)
@@ -47,7 +50,7 @@ class SubmitTaskUseCase:
         session.provenance_log.append({
             "timestamp": datetime.utcnow().isoformat(),
             "action": "execute_task",
-            "task": task_nl,
+            "task": self.sanitizer.sanitize(task_nl),
             "tokens_spent": snapshot.tokens_spent,
             "status": "success",
         })

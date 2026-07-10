@@ -1,6 +1,8 @@
 import subprocess
 import os
 
+from opentelemetry.trace import Status, StatusCode
+
 from src.domain.services.path_guard import PathTraversalError, ensure_safe_relative_path
 
 class GVisorSandboxDriver:
@@ -8,8 +10,11 @@ class GVisorSandboxDriver:
     Adapter for running code in a secure container sandboxed by gVisor (runsc).
     Includes Path Traversal validations at the execution layer.
     """
-    def __init__(self, workspace_root: str = "osw_workspace"):
+    def __init__(self, workspace_root: str = "osw_workspace", tracer=None):
         self.workspace_root = workspace_root
+        # Optional OpenTelemetry tracer (RNF-004): when set, each sandbox
+        # execution is wrapped in a span carrying stdout/exit_code.
+        self.tracer = tracer
 
     def execute_python_script(self, relative_script_path: str) -> str:
         # 1. Path Traversal Check (Mitigation for CVE-2026-7398). Delegated to the
@@ -37,20 +42,37 @@ class GVisorSandboxDriver:
         """Runs an R snippet in the sandbox (RF-005)."""
         return self._run_or_mock(["Rscript", "-e", code])
 
-    @staticmethod
-    def _run_or_mock(argv: list) -> str:
+    def _run_or_mock(self, argv: list) -> str:
         """Executes ``argv`` as a subprocess under CI; otherwise returns a mock.
 
         Real gVisor isolation (``docker run --runtime=runsc``) needs a Linux host
         with the runsc runtime and is out of reach here (RF-005 infra-blocked);
-        this keeps the multi-language execution surface real and testable.
+        this keeps the multi-language execution surface real and testable. When a
+        tracer is configured, the run is wrapped in a 'sandbox.execute' span
+        carrying stdout/exit_code (RNF-004).
         """
+        if self.tracer is None:
+            output, _, _ = self._execute(argv)
+            return output
+
+        with self.tracer.start_as_current_span("sandbox.execute") as span:
+            span.set_attribute("sandbox.command", argv[0])
+            output, exit_code, ok = self._execute(argv)
+            span.set_attribute("sandbox.exit_code", exit_code)
+            span.set_attribute("sandbox.stdout", output[:2000])
+            if not ok:
+                span.set_status(Status(StatusCode.ERROR))
+            return output
+
+    @staticmethod
+    def _execute(argv: list):
+        """Runs ``argv`` (under CI) or mocks it, returning (output, exit_code, ok)."""
         if os.getenv("CI") == "true":
             try:
                 result = subprocess.run(
                     argv, capture_output=True, text=True, timeout=30, check=True
                 )
-                return result.stdout
+                return result.stdout, result.returncode, True
             except subprocess.CalledProcessError as e:
-                return f"Execution error: {e.stderr}"
-        return "Mock execution output: 42"
+                return f"Execution error: {e.stderr}", e.returncode, False
+        return "Mock execution output: 42", 0, True

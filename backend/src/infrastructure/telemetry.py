@@ -21,3 +21,11 @@ def setup_telemetry(app: FastAPI, service_name: str = "osw-gateway") -> None:
     
     # 3. Instrument FastAPI application automatically
     FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
+
+def get_tracer(name: str = "osw-sandbox"):
+    """Returns a tracer from the globally-configured provider (RNF-004).
+
+    Used to instrument non-HTTP work such as sandbox execution, which the
+    FastAPI auto-instrumentation does not cover."""
+    return trace.get_tracer(name)

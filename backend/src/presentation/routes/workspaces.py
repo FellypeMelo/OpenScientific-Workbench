@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from src.application.use_cases.fork_workspace import ForkWorkspaceUseCase
 from src.domain.ports.storage_manager import StorageManagerPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
+from src.infrastructure.config import settings
 from src.infrastructure.storage.btrfs_manager import BtrfsSnapshotManager
 from src.presentation.dependencies import get_workspace_repository
 
@@ -14,11 +15,11 @@ router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
 def get_storage_manager() -> StorageManagerPort:
-    # `use_btrfs` self-disables on non-Linux platforms (see
+    # Honour the USE_BTRFS config flag (RNF-007) so a real Btrfs host can enable
+    # CoW forks. `use_btrfs` still self-disables on non-Linux platforms (see
     # `BtrfsSnapshotManager.__init__`), falling back to a real recursive
-    # directory copy -- so this dependency is safe to construct unconditionally
-    # on a Windows/dev/CI box as well as a real Btrfs-backed Linux host.
-    return BtrfsSnapshotManager()
+    # directory copy -- so this is safe on a Windows/dev/CI box too.
+    return BtrfsSnapshotManager(use_btrfs=settings.USE_BTRFS)
 
 
 class ForkWorkspaceRequest(BaseModel):

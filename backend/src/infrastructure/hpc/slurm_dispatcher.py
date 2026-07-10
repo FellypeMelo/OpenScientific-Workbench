@@ -78,7 +78,8 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
     Slurm login/gateway node.
     """
 
-    def __init__(self, host: str = None, username: str = None, key_path: str = None):
+    def __init__(self, host: str = None, username: str = None, key_path: str = None,
+                 credential_provider=None):
         # Legacy envs (`SLURM_HOST`/`SLURM_USER`) predate the Fase 4 SSH wiring
         # and are kept for backwards compatibility with any existing call
         # sites/config that only set those. They double as the connection
@@ -95,6 +96,11 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
         self.ssh_user = username or settings.SLURM_SSH_USER
         self.ssh_key_path = key_path or settings.SLURM_SSH_KEY_PATH
 
+        # Optional Vault-backed ephemeral credential provider (RNF-003). When set,
+        # connections authenticate with a one-time OTP password instead of the
+        # static SSH key file.
+        self.credential_provider = credential_provider
+
     @property
     def _is_configured(self) -> bool:
         return bool(self.ssh_host and self.ssh_user and self.ssh_key_path)
@@ -110,20 +116,33 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
             )
             return _MOCK_JOB_ID
 
-        return await asyncio.to_thread(self._dispatch_sync, sbatch_script)
+        otp = await self._resolve_otp()
+        return await asyncio.to_thread(self._dispatch_sync, sbatch_script, otp)
 
-    def _connect(self) -> paramiko.SSHClient:
-        """Opens a connected SSHClient using the configured key (shared by
-        dispatch / poll / SFTP). See the module docstring for the host-key policy."""
+    async def _resolve_otp(self):
+        """Fetches a one-time SSH OTP from the credential provider, if configured."""
+        if self.credential_provider is None:
+            return None
+        return await self.credential_provider.get_ephemeral_ssh_token(self.ssh_user)
+
+    def _connect(self, otp: str = None) -> paramiko.SSHClient:
+        """Opens a connected SSHClient (shared by dispatch / poll / SFTP). Uses the
+        ephemeral OTP as a password when one is supplied (RNF-003), otherwise the
+        static key file. See the module docstring for the host-key policy."""
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=self.ssh_host,
-            username=self.ssh_user,
-            key_filename=self.ssh_key_path,
-            timeout=15,
-        )
+        if otp:
+            client.connect(
+                hostname=self.ssh_host, username=self.ssh_user, password=otp, timeout=15
+            )
+        else:
+            client.connect(
+                hostname=self.ssh_host,
+                username=self.ssh_user,
+                key_filename=self.ssh_key_path,
+                timeout=15,
+            )
         return client
 
     async def poll_status(self, job_id: str) -> JobStatus:
@@ -138,10 +157,11 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
                 "returning JobStatus.UNKNOWN for job %r.", job_id,
             )
             return JobStatus.UNKNOWN
-        return await asyncio.to_thread(self._poll_status_sync, job_id)
+        otp = await self._resolve_otp()
+        return await asyncio.to_thread(self._poll_status_sync, job_id, otp)
 
-    def _poll_status_sync(self, job_id: str) -> JobStatus:
-        client = self._connect()
+    def _poll_status_sync(self, job_id: str, otp: str = None) -> JobStatus:
+        client = self._connect(otp)
         try:
             stdin, stdout, stderr = client.exec_command(
                 f"squeue -h -j {job_id} -o %T", timeout=30
@@ -167,17 +187,19 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
         if not self._is_configured:
             logger.warning("SlurmSSHDispatcher.upload_file: no gateway configured; skipping.")
             return
-        await asyncio.to_thread(self._sftp_transfer, "put", local_path, remote_path)
+        otp = await self._resolve_otp()
+        await asyncio.to_thread(self._sftp_transfer, "put", local_path, remote_path, otp)
 
     async def download_file(self, remote_path: str, local_path: str) -> None:
         """Fetches a produced output file back from the cluster over SFTP (RF-006)."""
         if not self._is_configured:
             logger.warning("SlurmSSHDispatcher.download_file: no gateway configured; skipping.")
             return
-        await asyncio.to_thread(self._sftp_transfer, "get", remote_path, local_path)
+        otp = await self._resolve_otp()
+        await asyncio.to_thread(self._sftp_transfer, "get", remote_path, local_path, otp)
 
-    def _sftp_transfer(self, direction: str, source: str, dest: str) -> None:
-        client = self._connect()
+    def _sftp_transfer(self, direction: str, source: str, dest: str, otp: str = None) -> None:
+        client = self._connect(otp)
         try:
             sftp = client.open_sftp()
             try:
@@ -190,19 +212,10 @@ class SlurmSSHDispatcher(HPCJobDispatcherPort):
         finally:
             client.close()
 
-    def _dispatch_sync(self, sbatch_script: str) -> str:
+    def _dispatch_sync(self, sbatch_script: str, otp: str = None) -> str:
         """Blocking Paramiko implementation, run off the event loop via `to_thread`."""
-        client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client = self._connect(otp)
         try:
-            client.connect(
-                hostname=self.ssh_host,
-                username=self.ssh_user,
-                key_filename=self.ssh_key_path,
-                timeout=15,
-            )
-
             stdin, stdout, stderr = client.exec_command("sbatch", timeout=30)
             stdin.write(sbatch_script)
             stdin.flush()

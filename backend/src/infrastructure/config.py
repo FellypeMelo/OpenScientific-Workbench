@@ -14,9 +14,18 @@ Design notes:
   Fase 3 LLM provider clients, etc.) are responsible for validating/raising close to
   the point of use if the resolved value is `None` outside of local development.
 """
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolved once at import time (same rationale as `jwt_auth.py`'s
+# `_SIGNING_SECRET`): `config.py` lives at
+# `<repo_root>/backend/src/infrastructure/config.py`, so `parents[3]` from
+# this file is `<repo_root>` -- `[0]=infrastructure, [1]=src, [2]=backend,
+# [3]=<repo_root>`. Verified by actually walking `Path(__file__).resolve()`
+# rather than guessed.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -166,6 +175,19 @@ class Settings(BaseSettings):
     GLM_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+
+    # --- MCP tool routing / Skills (RF-004/RF-009 gap closure) ---
+    # Filesystem root `infrastructure/skills/skill_registration.py::register_skills`
+    # walks for `*/SKILL.md` directories to compile and register as routable MCP
+    # tools (see `presentation/dependencies.py::get_mcp_registry`). Defaults to
+    # `<repo_root>/skills` -- a directory that does not exist in this repo yet
+    # (only unrelated coding-agent skills live under `.agents/skills`), so out of
+    # the box this registers zero skills. That is expected: `register_skills`
+    # already no-ops safely on a missing/empty directory (`Path.glob` on a
+    # nonexistent path yields no matches rather than raising), and the call site
+    # additionally wraps it in try/except as defense in depth. Override via the
+    # `SKILLS_ROOT` env var once real scientific Skill content is authored.
+    SKILLS_ROOT: str = str(_REPO_ROOT / "skills")
 
     # --- CORS (Fase 5 - frontend gap closure) ---
     # The Next.js frontend (`frontend/`) runs on its own origin (`next dev`

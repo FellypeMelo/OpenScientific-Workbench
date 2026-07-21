@@ -8,12 +8,14 @@ Routes should depend on these providers (e.g. `Depends(get_user_repository)`)
 instead of importing repository implementations directly, keeping the
 presentation layer decoupled from the concrete persistence adapter in use.
 """
+import logging
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.ports.hpc_job_dispatcher import HPCJobDispatcherPort
+from src.domain.ports.mcp_router import MCPRouterPort
 from src.domain.ports.node_executor import NodeExecutorPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.user_repository import UserRepositoryPort
@@ -23,6 +25,8 @@ from src.infrastructure.config import settings
 from src.infrastructure.hpc.local_job_dispatcher import LocalJobDispatcher
 from src.infrastructure.hpc.nvidia_vram_checker import NvidiaVRAMChecker
 from src.infrastructure.hpc.slurm_dispatcher import SlurmSSHDispatcher
+from src.infrastructure.mcp.bio_direct_adapters import register_direct_bio_tools
+from src.infrastructure.mcp.server_registry import MCPServerRegistry
 from src.infrastructure.persistence.database import get_db_session
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
 from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
@@ -30,6 +34,9 @@ from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorks
 from src.infrastructure.sandbox.bubblewrap_driver import BubblewrapSandboxDriver
 from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
 from src.infrastructure.security.vault_client import VaultClient
+from src.infrastructure.skills.skill_registration import register_skills
+
+logger = logging.getLogger(__name__)
 
 
 def get_current_user_id(request: Request) -> str:
@@ -164,3 +171,53 @@ def get_vram_checker() -> VRAMCheckerPort:
     `0.0` (not an error) on a host with no NVIDIA GPU (see
     `infrastructure/hpc/nvidia_vram_checker.py`)."""
     return NvidiaVRAMChecker()
+
+
+# Process-wide MCP tool registry singleton (RF-004/RF-009 gap closure).
+#
+# Unlike every other provider in this module, `MCPServerRegistry` is NOT
+# constructed fresh per request: it is a plain in-memory `Dict[str, Callable]`
+# (see `infrastructure/mcp/server_registry.py`) whose whole purpose is to hold
+# a set of routable tool handlers that only ever need to be assembled once per
+# process, not re-registered on every single request. A lazily-populated
+# module-level singleton (mirroring `jwt_auth.py`'s `_SIGNING_SECRET` pattern,
+# just lazy instead of eager) is the simplest correct shape for that -- this
+# codebase has no `app.state`-based DI precedent to follow instead.
+_mcp_registry: Optional[MCPServerRegistry] = None
+
+
+def get_mcp_registry() -> MCPRouterPort:
+    """Returns the process-wide `MCPServerRegistry`, constructing and
+    populating it on first call:
+
+    - Direct bio-tool adapters (RF-004: real UniProt/RCSB PDB/STRING REST API
+      calls, see `infrastructure/mcp/bio_direct_adapters.py`) are ALWAYS
+      registered -- they are free, public, unauthenticated APIs that need no
+      configuration, unlike every other config-gated adapter in this
+      codebase.
+    - Compiled Skills (RF-009, see `infrastructure/skills/skill_registration.py`)
+      are registered from `settings.SKILLS_ROOT`, guarded in try/except: a
+      missing/empty/malformed skills directory must never break the first
+      request that resolves this dependency (or app startup, if a caller
+      warms it eagerly). As of this writing no real scientific `SKILL.md`
+      content exists in this repo yet (see `infrastructure/config.py`'s
+      `SKILLS_ROOT` docstring), so this registers zero skills today -- that
+      is expected, not a bug.
+
+    Callable both as a FastAPI `Depends(get_mcp_registry)` and directly.
+    """
+    global _mcp_registry
+    if _mcp_registry is None:
+        registry = MCPServerRegistry()
+        register_direct_bio_tools(registry)
+        try:
+            register_skills(registry, settings.SKILLS_ROOT)
+        except Exception:
+            logger.warning(
+                "register_skills() failed for SKILLS_ROOT=%r; continuing with "
+                "zero skills registered (bio tools remain available).",
+                settings.SKILLS_ROOT,
+                exc_info=True,
+            )
+        _mcp_registry = registry
+    return _mcp_registry

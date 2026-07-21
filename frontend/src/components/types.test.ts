@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { BackendDAGNode } from "@/lib/api-client";
+import type { BackendCriticComment, BackendDAGNode } from "@/lib/api-client";
 
-import { mapBackendNode } from "./types";
+import { extractVisualization, mapBackendComment, mapBackendNode } from "./types";
 
 function backendNode(overrides: Partial<BackendDAGNode> = {}): BackendDAGNode {
   return {
@@ -55,5 +55,86 @@ describe("mapBackendNode", () => {
   it("carries the node id through unchanged", () => {
     const node = mapBackendNode(backendNode({ id: "n42" }));
     expect(node.id).toBe("n42");
+  });
+});
+
+describe("mapBackendComment", () => {
+  function backendComment(overrides: Partial<BackendCriticComment> = {}): BackendCriticComment {
+    return { id: "c1", target_text: "afinity", suggestion: "affinity", resolved: false, ...overrides };
+  }
+
+  it("maps snake_case backend fields onto the frontend's camelCase shape", () => {
+    const comment = mapBackendComment(backendComment());
+    expect(comment).toEqual({
+      id: "c1",
+      targetText: "afinity",
+      suggestion: "affinity",
+      resolved: false,
+    });
+  });
+
+  it("carries a resolved=true comment through unchanged", () => {
+    const comment = mapBackendComment(backendComment({ resolved: true }));
+    expect(comment.resolved).toBe(true);
+  });
+});
+
+describe("extractVisualization (RF-007)", () => {
+  function backendNode(overrides: Partial<BackendDAGNode> = {}): BackendDAGNode {
+    return {
+      id: "n1",
+      description: "fetch structure",
+      dependencies: [],
+      reward: 1,
+      status: "COMPLETED",
+      ...overrides,
+    };
+  }
+
+  it("returns undefined when the node has no output", () => {
+    expect(extractVisualization(backendNode({ output: null }))).toBeUndefined();
+  });
+
+  it("returns undefined for a plain sandbox stdout with no recognizable JSON", () => {
+    const node = backendNode({ output: { stdout: "Alignment complete.\n", exit_code: 0 } });
+    expect(extractVisualization(node)).toBeUndefined();
+  });
+
+  it("extracts a pdbId from JSON a sandboxed script printed to stdout", () => {
+    const node = backendNode({
+      output: { stdout: '{"pdb_id": "1CRN"}\n', exit_code: 0 },
+    });
+    expect(extractVisualization(node)).toEqual({ pdbId: "1CRN", genome: undefined, locus: undefined });
+  });
+
+  it("extracts genome/locus from JSON on stdout", () => {
+    const node = backendNode({
+      output: { stdout: '{"genome": "hg38", "locus": "chr8:127,735,434-127,742,951"}', exit_code: 0 },
+    });
+    expect(extractVisualization(node)).toEqual({
+      pdbId: undefined,
+      genome: "hg38",
+      locus: "chr8:127,735,434-127,742,951",
+    });
+  });
+
+  it("ignores stdout JSON with no recognized visualization keys", () => {
+    const node = backendNode({ output: { stdout: '{"exit_status": "ok"}', exit_code: 0 } });
+    expect(extractVisualization(node)).toBeUndefined();
+  });
+
+  it("prefers fields set directly on output over parsing stdout", () => {
+    const node = backendNode({ output: { pdb_id: "6XYZ", stdout: "irrelevant" } });
+    expect(extractVisualization(node)?.pdbId).toBe("6XYZ");
+  });
+
+  it("returns undefined for the LLM node executor's {text: ...} shape", () => {
+    const node = backendNode({ output: { text: "I fetched PDB structure 1CRN for you." } });
+    expect(extractVisualization(node)).toBeUndefined();
+  });
+
+  it("does not throw on malformed stdout JSON", () => {
+    const node = backendNode({ output: { stdout: "{not valid json", exit_code: 0 } });
+    expect(extractVisualization(node)).toBeUndefined();
   });
 });

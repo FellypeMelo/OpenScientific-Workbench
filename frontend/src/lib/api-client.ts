@@ -265,6 +265,38 @@ export async function compileManuscript(latexSource: string): Promise<Blob> {
   return response.blob();
 }
 
+/** A single critic comment exactly as serialized by the backend's
+ * `CriticComment` (see `backend/src/domain/entities/manuscript.py`). */
+export interface BackendCriticComment {
+  id: string;
+  target_text: string;
+  suggestion: string;
+  resolved?: boolean;
+}
+
+interface CritiqueResponse {
+  comments: BackendCriticComment[];
+}
+
+/**
+ * `POST /api/v1/manuscript/critique` -- see
+ * `backend/src/presentation/routes/manuscript.py`. Runs `latexSource` through
+ * a real BYOK-LLM critic (RF-008) and returns its comments; throws `ApiError`
+ * (400 unsupported/missing-key provider, 502 when the critic's response
+ * could not be used).
+ */
+export async function critiqueManuscript(
+  latexSource: string,
+  provider: string = "deepseek"
+): Promise<BackendCriticComment[]> {
+  const response = await apiFetch("/api/v1/manuscript/critique", {
+    method: "POST",
+    body: JSON.stringify({ latex_source: latexSource, provider }),
+  });
+  const data: CritiqueResponse = await response.json();
+  return data.comments;
+}
+
 export const apiClient = {
   getApiBaseUrl,
   setAuthToken,
@@ -276,6 +308,7 @@ export const apiClient = {
   streamChat,
   streamTask,
   compileManuscript,
+  critiqueManuscript,
 };
 
 export default apiClient;

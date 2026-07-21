@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { ChatPanel } from "@/components/ChatPanel";
 import { MCTSGraph } from "@/components/MCTSGraph";
 import { VisualizerPanel } from "@/components/VisualizerPanel";
-import { mapBackendNode, type DAGNode, type VisualizationResult } from "@/components/types";
+import { extractVisualization, mapBackendNode, type DAGNode, type VisualizationResult } from "@/components/types";
 
 const LOCAL_WORKSPACE_ID_KEY = "osw.workspaceId";
 
@@ -81,7 +81,11 @@ export default function Home() {
   const [taskError, setTaskError] = useState<string | null>(null);
   // Job-derived visualization data (RF-007); undefined until an analysis result
   // arrives, at which point the viewers render it instead of their demo default.
-  const [visualization] = useState<VisualizationResult | undefined>(undefined);
+  // Populated exclusively by `extractVisualization` below, reading a real
+  // completed DAG node's `output` from a live `node_update` SSE event -- see
+  // that function's docstring (`components/types.ts`) for exactly which
+  // producer shapes are recognized today.
+  const [visualization, setVisualization] = useState<VisualizationResult | undefined>(undefined);
 
   // Guards against React StrictMode's intentional double-invoke of effects in
   // development, which would otherwise provision two sessions for one page
@@ -116,6 +120,10 @@ export default function Home() {
         setDagNodes(event.nodes.map((n) => mapBackendNode(n)));
         setReviewStrip({ status: "idle" });
         setTaskError(null);
+        // A fresh run starts with no visualization of its own -- any result
+        // from a *previous* run must not linger and be mistaken for this
+        // one's output.
+        setVisualization(undefined);
         break;
       }
       case "node_start": {
@@ -128,6 +136,11 @@ export default function Home() {
         setDagNodes((prev) =>
           prev.map((n) => (n.id === event.node.id ? mapBackendNode(event.node) : n))
         );
+        // RF-007: a completed node's real `output` (see
+        // `extractVisualization`'s docstring) may carry structure/genomic
+        // references worth rendering in the viewer panel.
+        const extracted = extractVisualization(event.node);
+        if (extracted) setVisualization(extracted);
         break;
       }
       case "review": {
@@ -171,7 +184,9 @@ export default function Home() {
         onTaskEvent={handleTaskEvent}
       />
 
-      {/* Panel 2: Scientific Visualizer Container (Center Panel) */}
+      {/* Panel 2: Scientific Visualizer Container (Center Panel) --
+          `visualization` is real job-derived data (RF-007), undefined until a
+          live `node_update` event actually produces one. */}
       <VisualizerPanel result={visualization} />
 
       {/* Panel 3: MCTS Execution DAG tree (Right Panel) */}

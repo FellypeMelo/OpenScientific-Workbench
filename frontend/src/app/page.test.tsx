@@ -35,7 +35,13 @@ vi.mock("@/components/ChatPanel", () => ({
   },
 }));
 vi.mock("@/components/VisualizerPanel", () => ({
-  VisualizerPanel: () => <div data-testid="visualizer-panel" />,
+  // Serializes the `result` prop `Home` computed (RF-007), so tests can
+  // assert on the real node_update -> extractVisualization -> setVisualization
+  // wiring without re-testing VisualizerPanel's own rendering (covered by
+  // VisualizerPanel.test.tsx).
+  VisualizerPanel: ({ result }: { result?: Record<string, unknown> }) => (
+    <div data-testid="visualizer-panel" data-result={JSON.stringify(result ?? null)} />
+  ),
 }));
 vi.mock("@/components/MCTSGraph", () => ({
   // Serializes the exact DAGNode objects Home computed, so tests can assert on
@@ -243,6 +249,85 @@ describe("Home page", () => {
 
       const strip = screen.getByTestId("review-status-strip");
       expect(strip.dataset.status).toBe("final-rejection");
+    });
+
+    it("starts with no visualization data -- the panel gets undefined until a real result arrives (RF-007)", () => {
+      renderAndWaitForHandler();
+
+      expect(screen.getByTestId("visualizer-panel").dataset.result).toBe("null");
+    });
+
+    it("a node_update carrying a recognizable structure reference populates the visualizer panel", () => {
+      renderAndWaitForHandler();
+
+      act(() => {
+        capturedOnTaskEvent!({
+          event: "node_update",
+          node: {
+            id: "n1",
+            description: "fetch structure",
+            dependencies: [],
+            reward: 1,
+            status: "COMPLETED",
+            output: { stdout: '{"pdb_id": "1CRN"}', exit_code: 0 },
+          },
+        });
+      });
+
+      const result = JSON.parse(screen.getByTestId("visualizer-panel").dataset.result ?? "null");
+      expect(result).toEqual({ pdbId: "1CRN", genome: undefined, locus: undefined });
+    });
+
+    it("a node_update with no recognizable output leaves the visualizer panel untouched", () => {
+      renderAndWaitForHandler();
+
+      act(() => {
+        capturedOnTaskEvent!({
+          event: "node_update",
+          node: {
+            id: "n1",
+            description: "align reads",
+            dependencies: [],
+            reward: 1,
+            status: "COMPLETED",
+            output: { stdout: "Alignment complete.", exit_code: 0 },
+          },
+        });
+      });
+
+      expect(screen.getByTestId("visualizer-panel").dataset.result).toBe("null");
+    });
+
+    it("a fresh dag_planned event clears a stale visualization from a previous run", () => {
+      renderAndWaitForHandler();
+
+      act(() => {
+        capturedOnTaskEvent!({
+          event: "node_update",
+          node: {
+            id: "n1",
+            description: "fetch structure",
+            dependencies: [],
+            reward: 1,
+            status: "COMPLETED",
+            output: { stdout: '{"pdb_id": "1CRN"}', exit_code: 0 },
+          },
+        });
+      });
+      expect(screen.getByTestId("visualizer-panel").dataset.result).not.toBe("null");
+
+      act(() => {
+        capturedOnTaskEvent!({
+          event: "dag_planned",
+          nodes: [],
+          edges: [],
+          tokens_spent: 0,
+          budget_exhausted: false,
+          completed: false,
+        });
+      });
+
+      expect(screen.getByTestId("visualizer-panel").dataset.result).toBe("null");
     });
 
     it("an error event surfaces a task-error message near the DAG panel", () => {

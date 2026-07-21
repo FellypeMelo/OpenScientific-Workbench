@@ -7,6 +7,11 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn>=0.30.0",
+    # Required by FastAPI/Starlette to parse `multipart/form-data` requests --
+    # the workspace file-upload route (`POST /workspaces/{id}/files`, see
+    # `presentation/routes/workspaces.py`) uses `UploadFile`/`Form`, which
+    # hard-fails at request time (500) without this installed.
+    "python-multipart>=0.0.9",
     # `[email]` extra pulls email-validator, required by the EmailStr field on the
     # User entity (domain/entities/user.py). It used to arrive transitively via
     # pydantic-ai; declaring it directly keeps EmailStr working after that removal.

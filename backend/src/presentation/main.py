@@ -11,6 +11,7 @@ from src.infrastructure.telemetry import setup_telemetry
 from src.presentation.middleware.jwt_auth import JWTAuthMiddleware
 from src.presentation.middleware.rate_limit import RateLimitMiddleware
 from src.presentation.middleware.security_headers import SecurityHeadersMiddleware
+from src.presentation.dependencies import close_graph_store, close_vector_store
 from src.presentation.routes.sessions import router as sessions_router
 from src.presentation.routes.chat import router as chat_router
 from src.presentation.routes.tasks import router as tasks_router
@@ -19,6 +20,7 @@ from src.presentation.routes.workspaces import router as workspaces_router
 from src.presentation.routes.manuscript import router as manuscript_router
 from src.presentation.routes.hpc import router as hpc_router
 from src.presentation.routes.mcp import router as mcp_router
+from src.presentation.routes.documents import router as documents_router
 from src.presentation.routes.health import router as health_router
 
 
@@ -77,7 +79,14 @@ async def lifespan(app: FastAPI):
     if settings.ENV != "production":
         await init_models()
     yield
-    # Shutdown: dispose the engine's connection pool cleanly.
+    # Shutdown: release every real connection pool this process may have
+    # lazily created, cleanly. `QdrantVectorStore`/`Neo4jGraphClient` (RAG-MARKER)
+    # are process-wide singletons (see `presentation/dependencies.py`) that
+    # were, until now, never closed anywhere -- a real `AsyncQdrantClient`/
+    # `AsyncGraphDatabase` driver leaks its connection pool on process exit
+    # without this.
+    await close_vector_store()
+    await close_graph_store()
     await engine.dispose()
 
 
@@ -226,6 +235,7 @@ app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(manuscript_router, prefix="/api/v1")
 app.include_router(hpc_router, prefix="/api/v1")
 app.include_router(mcp_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
 
 # Liveness/readiness probes are mounted at the root (no `/api/v1` prefix), to
 # match the plain `/health` / `/ready` paths orchestrators conventionally probe

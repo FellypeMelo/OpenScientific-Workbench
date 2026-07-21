@@ -45,11 +45,15 @@ async def test_context_omits_empty_graph_section():
 
 @pytest.mark.asyncio
 async def test_use_case_works_with_real_adapter_shapes():
-    # Neo4jGraphClient (mock path) + QdrantVectorStore (mock path) satisfy the ports.
+    # Neo4jGraphClient (mock path) + QdrantVectorStore (mock path, explicitly
+    # forced via `enabled=False` since `settings.QDRANT_ENABLED` now defaults
+    # to `True` -- Qdrant is always-on infra in this architecture, unlike
+    # Neo4j/Vault, so the mock path is opt-in here rather than the default)
+    # satisfy the ports.
     graph = Neo4jGraphClient(uri="bolt://mock", password="")
     await graph.add_triple("TP53", "interacts_with", "MDM2")
 
-    context = await RetrieveContextUseCase(graph, QdrantVectorStore()).execute("TP53")
+    context = await RetrieveContextUseCase(graph, QdrantVectorStore(enabled=False)).execute("TP53")
 
     assert "MDM2" in context
     assert "mock retrieval chunk" in context

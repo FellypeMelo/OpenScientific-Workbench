@@ -79,9 +79,33 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: Optional[str] = None
 
-    # --- Vector store ---
+    # --- Vector store (RAG-MARKER gap closure) ---
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
+    # Unlike Neo4j/Vault (which gate real-vs-mock on whether a credential is
+    # configured), Qdrant is a normal, always-on Compose service in this
+    # architecture (see `docker-compose.yml`'s `qdrant` service) -- not
+    # optional infra -- so this defaults to `True`. `QdrantVectorStore` (see
+    # `infrastructure/vector/qdrant_client.py`) still branches on it exactly
+    # like the other Fase 4 adapters branch on credential presence: `False`
+    # (a fresh checkout / CI unit-test run with no live Qdrant instance)
+    # keeps the deterministic in-memory mock path, so importing/constructing
+    # it never requires a running Qdrant server.
+    QDRANT_ENABLED: bool = True
+    QDRANT_COLLECTION: str = "osw_documents"
+
+    # --- PDF parsing (RAG-MARKER gap closure) ---
+    # Whether `MarkerDocumentParser` (see `infrastructure/parsing/marker_adapter.py`)
+    # -- the heavy OCR-grade PDF parser (torch/surya-ocr via the optional
+    # `marker-pdf` package) -- is usable at all. Defaults to `False`: the
+    # default ingestion path (`PypdfDocumentParser`, pure Python, no GPU/model
+    # download) is what `POST /api/v1/documents/ingest` uses out of the box.
+    # Flipping this to `True` alone is not sufficient to actually use Marker
+    # -- the optional `marker-pdf` package must also be installed -- but it
+    # IS sufficient to turn "disabled by config" into "disabled because the
+    # package is missing" as the reported reason, see
+    # `MarkerDocumentParser.parse`.
+    MARKER_ENABLED: bool = False
 
     # --- Secrets manager (Fase 4 - Vault) ---
     VAULT_ADDR: str = "http://localhost:8200"

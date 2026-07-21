@@ -8,11 +8,11 @@ heavier ``pydantic-ai`` runtime -- same outcome (NL -> typed DAG), fewer moving
 parts (KISS). The domain orchestrator depends only on the port, so this choice
 is invisible to it.
 """
-import json
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from src.domain.entities.dag import DAGNode, DAGSnapshot
 from src.domain.ports.model_provider import ModelProviderPort
+from src.domain.services.json_extraction import extract_json
 
 _SYSTEM_INSTRUCTION = (
     "You are a scientific research planner. Decompose the user's task into a "
@@ -39,7 +39,10 @@ class LLMTaskPlanner:
         raw = await self.model.generate_response(
             prompt=task_nl, system_instruction=_SYSTEM_INSTRUCTION, temperature=0.0
         )
-        payload = _extract_json(raw)
+        try:
+            payload = extract_json(raw)
+        except ValueError as exc:
+            raise ValueError("Task planner response contained no parseable JSON plan.") from exc
         node_dicts = payload.get("nodes") if isinstance(payload, dict) else payload
         if not isinstance(node_dicts, list) or not node_dicts:
             raise ValueError("Task planner returned an empty or non-list plan.")
@@ -56,33 +59,3 @@ class LLMTaskPlanner:
         ]
         edges = [(dep, node.id) for node in nodes for dep in node.dependencies]
         return DAGSnapshot(nodes=nodes, edges=edges)
-
-
-def _extract_json(text: str) -> Any:
-    """Best-effort extraction of the first JSON object/array in an LLM response.
-
-    Tolerates prose and ```json fences around the payload; raises ValueError with
-    a 'plan' hint when nothing parseable is found so callers get a clear signal.
-    """
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try the container that OPENS earliest in the text first, so a top-level
-    # array `[{...}]` is not mistaken for its inner object `{...}`.
-    candidates = []
-    for open_ch, close_ch in (("{", "}"), ("[", "]")):
-        start = text.find(open_ch)
-        end = text.rfind(close_ch)
-        if start != -1 and end != -1 and end > start:
-            candidates.append((start, text[start : end + 1]))
-
-    for _, candidate in sorted(candidates, key=lambda c: c[0]):
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-
-    raise ValueError("Task planner response contained no parseable JSON plan.")

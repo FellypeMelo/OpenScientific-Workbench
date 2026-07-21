@@ -34,7 +34,22 @@ dependencies = [
     # alternative and does not need this dependency.
     "rq>=2.0.0",
     "neo4j>=5.21.0",
-    "qdrant-client>=1.9.1",
+    # `[fastembed]` extra pulls in FastEmbed (ONNX-runtime local inference,
+    # CPU-only, no GPU/torch needed) so `QdrantVectorStore` (see
+    # `infrastructure/vector/qdrant_client.py`) can pass `models.Document(...)`
+    # to `upsert`/`query_points` and have both indexed chunks and search
+    # queries embedded on-the-fly against a real Qdrant instance -- no
+    # separate embedding-model-serving infra required. Model weights (~130MB,
+    # the default `BAAI/bge-small-en`) download once on first real use, not
+    # at import time.
+    "qdrant-client[fastembed]>=1.9.1",
+    # Default (RAG-MARKER) PDF text-extraction dependency: pure Python, no
+    # GPU/model download, used by `infrastructure/parsing/pypdf_adapter.py`.
+    # The heavier OCR-grade alternative (Marker, torch-based) stays an
+    # opt-in, lazily-imported extra -- see
+    # `infrastructure/parsing/marker_adapter.py` -- NOT declared here, so the
+    # default install stays light.
+    "pypdf>=4.0.0",
     "paramiko>=3.4.0",
     "httpx>=0.27.0",
     "pyjwt>=2.8.0",

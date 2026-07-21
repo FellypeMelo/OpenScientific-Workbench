@@ -84,3 +84,111 @@ def test_get_artifact_repository_returns_a_postgres_artifact_repository():
 
     assert isinstance(repo, PostgresArtifactRepository)
     assert repo.db_session is fake_session
+
+
+class TestRagStoreSingletons:
+    """RAG-MARKER gap closure: `get_vector_store`/`get_graph_store` are
+    process-wide singletons (unlike every other `Depends()` factory in this
+    module, which constructs a fresh instance per call) so their real,
+    lazily-created connection pool is built once and released exactly once
+    via `close_vector_store`/`close_graph_store` -- see the module docstring
+    comment directly above them."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_singletons(self):
+        import src.presentation.dependencies as dependencies
+
+        dependencies._vector_store = None
+        dependencies._graph_store = None
+        yield
+        dependencies._vector_store = None
+        dependencies._graph_store = None
+
+    def test_get_vector_store_returns_a_qdrant_vector_store(self):
+        from src.infrastructure.vector.qdrant_client import QdrantVectorStore
+        from src.presentation.dependencies import get_vector_store
+
+        store = get_vector_store()
+
+        assert isinstance(store, QdrantVectorStore)
+
+    def test_get_vector_store_returns_the_same_instance_across_calls(self):
+        from src.presentation.dependencies import get_vector_store
+
+        first = get_vector_store()
+        second = get_vector_store()
+
+        assert first is second
+
+    @pytest.mark.asyncio
+    async def test_close_vector_store_closes_and_clears_the_singleton(self):
+        import src.presentation.dependencies as dependencies
+        from src.presentation.dependencies import close_vector_store, get_vector_store
+
+        store = get_vector_store()
+        closed = {"called": False}
+
+        async def _fake_close():
+            closed["called"] = True
+
+        store.close = _fake_close
+
+        await close_vector_store()
+
+        assert closed["called"] is True
+        assert dependencies._vector_store is None
+
+    @pytest.mark.asyncio
+    async def test_close_vector_store_is_noop_when_never_constructed(self):
+        from src.presentation.dependencies import close_vector_store
+
+        await close_vector_store()  # must not raise
+
+    def test_get_graph_store_returns_a_neo4j_graph_client(self):
+        from src.infrastructure.graph.neo4j_client import Neo4jGraphClient
+        from src.presentation.dependencies import get_graph_store
+
+        store = get_graph_store()
+
+        assert isinstance(store, Neo4jGraphClient)
+
+    def test_get_graph_store_returns_the_same_instance_across_calls(self):
+        from src.presentation.dependencies import get_graph_store
+
+        first = get_graph_store()
+        second = get_graph_store()
+
+        assert first is second
+
+    @pytest.mark.asyncio
+    async def test_close_graph_store_closes_and_clears_the_singleton(self):
+        import src.presentation.dependencies as dependencies
+        from src.presentation.dependencies import close_graph_store, get_graph_store
+
+        store = get_graph_store()
+        closed = {"called": False}
+
+        async def _fake_close():
+            closed["called"] = True
+
+        store.close = _fake_close
+
+        await close_graph_store()
+
+        assert closed["called"] is True
+        assert dependencies._graph_store is None
+
+    @pytest.mark.asyncio
+    async def test_close_graph_store_is_noop_when_never_constructed(self):
+        from src.presentation.dependencies import close_graph_store
+
+        await close_graph_store()  # must not raise
+
+
+def test_get_document_parser_returns_a_pypdf_document_parser():
+    from src.infrastructure.parsing.pypdf_adapter import PypdfDocumentParser
+    from src.presentation.dependencies import get_document_parser
+
+    parser = get_document_parser()
+
+    assert isinstance(parser, PypdfDocumentParser)

@@ -8,13 +8,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from src.application.use_cases.retrieve_context import RetrieveContextUseCase
+from src.domain.ports.graph_store import GraphStorePort
 from src.domain.ports.session_repository import SessionRepositoryPort
+from src.domain.ports.vector_store import VectorStorePort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
 from src.domain.services.pii_sanitizer import PIISanitizer
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
 from src.presentation.dependencies import (
     get_current_user_id,
+    get_graph_store,
     get_session_repository,
+    get_vector_store,
     get_workspace_repository,
 )
 
@@ -71,6 +76,8 @@ async def chat_stream(
     current_user_id: str = Depends(get_current_user_id),
     session_repo: SessionRepositoryPort = Depends(get_session_repository),
     workspace_repo: WorkspaceRepositoryPort = Depends(get_workspace_repository),
+    graph_store: GraphStorePort = Depends(get_graph_store),
+    vector_store: VectorStorePort = Depends(get_vector_store),
 ):
     # IDOR fix: this route used to stream a chat response for ANY session id
     # without checking the session existed, let alone who owns it -- any
@@ -117,6 +124,33 @@ async def chat_stream(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    # RAG-MARKER: ground the response on retrieved knowledge-graph relations
+    # + vector-store passages before opening the stream. Wrapped in its own
+    # try/except -- a Qdrant/Neo4j hiccup (unreachable service, malformed
+    # response, etc.) must degrade to today's ungrounded behavior (the plain
+    # `DEFAULT_SYSTEM_INSTRUCTION`), never turn into a 500 or block the chat
+    # turn entirely. Resolved *before* the stream opens, same rationale as
+    # the BYOK client above: any exception here still becomes a clean
+    # response (in this case, silently falling back) rather than failing
+    # mid-stream.
+    system_instruction = DEFAULT_SYSTEM_INSTRUCTION
+    try:
+        context = await RetrieveContextUseCase(graph_store, vector_store).execute(request.prompt)
+        if context:
+            system_instruction = (
+                f"{DEFAULT_SYSTEM_INSTRUCTION}\n\n"
+                "Use the following retrieved context to ground your answer "
+                "when it is relevant; ignore it if it is not:\n\n"
+                f"{context}"
+            )
+    except Exception:
+        logger.warning(
+            "RAG context retrieval failed for session %s; continuing with "
+            "ungrounded system instruction.",
+            session_id,
+            exc_info=True,
+        )
+
     async def event_generator() -> AsyncGenerator[str, None]:
         yield _sse("planning", "Initiating MCTS agent loop...")
 
@@ -124,7 +158,7 @@ async def chat_stream(
         try:
             async for delta in client.generate_stream(
                 prompt=request.prompt,
-                system_instruction=DEFAULT_SYSTEM_INSTRUCTION,
+                system_instruction=system_instruction,
             ):
                 if not delta:
                     continue

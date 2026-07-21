@@ -3,10 +3,49 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from uuid import UUID, uuid4
+from src.presentation.dependencies import get_graph_store, get_vector_store
 from src.presentation.main import app
 from src.presentation.middleware.jwt_auth import create_access_token
 
 client = TestClient(app)
+
+
+class _EmptyGraphStore:
+    """Stand-in `GraphStorePort`: no relations, ever. Overrides the real
+    `Neo4jGraphClient` singleton `routes/chat.py` now resolves via
+    `Depends(get_graph_store)` (RAG-MARKER) so these chat-route tests stay
+    fast/hermetic and don't depend on `settings.NEO4J_PASSWORD`."""
+
+    async def get_relations(self, subject):
+        return []
+
+
+class _EmptyVectorStore:
+    """Stand-in `VectorStorePort`: no passages, ever. Overrides the real
+    `QdrantVectorStore` singleton (which -- unlike Neo4j/Vault -- defaults to
+    `QDRANT_ENABLED=True`, i.e. would otherwise attempt a real network call
+    to a Qdrant instance that does not exist in this test environment) so
+    these chat-route tests stay fast/hermetic. `RetrieveContextUseCase.execute`
+    with both stores empty returns `""`, so `system_instruction` stays the
+    plain `DEFAULT_SYSTEM_INSTRUCTION` these tests were already written
+    against -- no other assertion here needs updating."""
+
+    async def search(self, query, top_k=5):
+        return []
+
+    async def upsert(self, chunks):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _override_rag_stores():
+    app.dependency_overrides[get_graph_store] = lambda: _EmptyGraphStore()
+    app.dependency_overrides[get_vector_store] = lambda: _EmptyVectorStore()
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_graph_store, None)
+        app.dependency_overrides.pop(get_vector_store, None)
 
 # All application routes now require a valid `Authorization: Bearer <token>` header
 # (Fase 2 - JWT auth middleware applies globally). Mint one via the helper the

@@ -10,6 +10,12 @@ from src.application.use_cases.fork_workspace import ForkWorkspaceUseCase
 from src.domain.ports.storage_manager import StorageManagerPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
 from src.domain.services.path_guard import PathTraversalError, ensure_safe_relative_path
+from src.domain.services.upload_guard import (
+    InvalidUploadFilenameError,
+    UploadTooLargeError,
+    iter_upload_bounded,
+    sanitize_upload_filename,
+)
 from src.infrastructure.config import settings
 from src.infrastructure.storage.btrfs_manager import BtrfsSnapshotManager
 from src.presentation.dependencies import get_current_user_id, get_workspace_repository
@@ -93,12 +99,6 @@ class FileUploadResponse(BaseModel):
     size_bytes: int
 
 
-# Bounded chunked read size for `upload_file` below -- large enough to be
-# efficient, small enough that the `MAX_UPLOAD_MB` cap check below can never
-# let a single read balloon memory far past that cap before catching it.
-_UPLOAD_CHUNK_BYTES = 1024 * 1024
-
-
 @router.post(
     "/{workspace_id}/files",
     response_model=FileUploadResponse,
@@ -135,11 +135,12 @@ async def upload_file(
     #    metadata), so a filename of e.g. "../../evil.sh" must be reduced to
     #    just "evil.sh" before it is ever joined onto a filesystem path --
     #    `ensure_safe_relative_path` above only validated `relative_path`, not
-    #    this independent, differently-sourced value.
-    raw_name = (file.filename or "upload.bin").replace("\\", "/")
-    safe_name = os.path.basename(raw_name)
-    if not safe_name or safe_name in (".", ".."):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload filename.")
+    #    this independent, differently-sourced value. Shared with
+    #    `POST /documents/ingest` (see `domain/services/upload_guard.py`).
+    try:
+        safe_name = sanitize_upload_filename(file.filename)
+    except InvalidUploadFilenameError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     dest_relative = posixpath.join(safe_dir, safe_name) if safe_dir else safe_name
 
@@ -161,22 +162,16 @@ async def upload_file(
     total_bytes = 0
     try:
         with open(final_path, "wb") as out:
-            while True:
-                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-                if not chunk:
-                    break
+            async for chunk in iter_upload_bounded(file, max_bytes):
                 total_bytes += len(chunk)
-                if total_bytes > max_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"Upload exceeds MAX_UPLOAD_MB={settings.MAX_UPLOAD_MB}.",
-                    )
                 out.write(chunk)
-    except HTTPException:
+    except UploadTooLargeError as exc:
         # Don't leave a truncated partial file behind on a rejected upload.
         if os.path.exists(final_path):
             os.remove(final_path)
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
     finally:
         await file.close()
 

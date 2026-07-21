@@ -15,19 +15,24 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.ports.artifact_repository import ArtifactRepositoryPort
+from src.domain.ports.document_parser import DocumentParserPort
+from src.domain.ports.graph_store import GraphStorePort
 from src.domain.ports.hpc_job_dispatcher import HPCJobDispatcherPort
 from src.domain.ports.mcp_router import MCPRouterPort
 from src.domain.ports.node_executor import NodeExecutorPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.user_repository import UserRepositoryPort
+from src.domain.ports.vector_store import VectorStorePort
 from src.domain.ports.vram_checker import VRAMCheckerPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
 from src.infrastructure.config import settings
+from src.infrastructure.graph.neo4j_client import Neo4jGraphClient
 from src.infrastructure.hpc.local_job_dispatcher import LocalJobDispatcher
 from src.infrastructure.hpc.nvidia_vram_checker import NvidiaVRAMChecker
 from src.infrastructure.hpc.slurm_dispatcher import SlurmSSHDispatcher
 from src.infrastructure.mcp.bio_direct_adapters import register_direct_bio_tools
 from src.infrastructure.mcp.server_registry import MCPServerRegistry
+from src.infrastructure.parsing.pypdf_adapter import PypdfDocumentParser
 from src.infrastructure.persistence.database import get_db_session
 from src.infrastructure.persistence.postgres_artifact_repo import PostgresArtifactRepository
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
@@ -38,6 +43,7 @@ from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
 from src.infrastructure.security.vault_client import VaultClient
 from src.infrastructure.skills.skill_registration import register_skills
 from src.infrastructure.telemetry import get_tracer
+from src.infrastructure.vector.qdrant_client import QdrantVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -237,3 +243,77 @@ def get_mcp_registry() -> MCPRouterPort:
             )
         _mcp_registry = registry
     return _mcp_registry
+
+
+# Process-wide singletons for the RAG-MARKER vector/graph store adapters --
+# same rationale and shape as `_mcp_registry` above, but for a different
+# reason: `QdrantVectorStore`/`Neo4jGraphClient` each lazily construct a real
+# async client (`AsyncQdrantClient`/`AsyncGraphDatabase.driver`) wrapping a
+# genuine connection pool the FIRST time a real (non-mock) call is made.
+# Constructing a fresh instance per request (like every OTHER `Depends()`
+# factory in this module) would leak one such pool per request, since nothing
+# would ever call its `.close()`. Instead these are built once and released
+# exactly once, from `presentation/main.py`'s `lifespan` shutdown via
+# `close_vector_store()`/`close_graph_store()` below -- mirroring how
+# `engine.dispose()` releases the SQLAlchemy engine's pool in that same
+# shutdown block.
+#
+# Both routes that need one of these (`routes/chat.py`'s retrieval call,
+# `routes/documents.py`'s ingestion route) resolve them via
+# `Depends(get_vector_store)`/`Depends(get_graph_store)`, so tests exercise
+# the FastAPI `app.dependency_overrides` pattern used everywhere else in this
+# codebase to substitute a fake instead of touching this singleton (or real
+# infra) at all -- see `tests/unit/test_chat_rag_wiring.py`.
+_vector_store: Optional[QdrantVectorStore] = None
+_graph_store: Optional[Neo4jGraphClient] = None
+
+
+def get_vector_store() -> VectorStorePort:
+    """Returns the process-wide `QdrantVectorStore` singleton (RAG-MARKER),
+    constructing it on first call. Already branches real-vs-mock internally
+    on `settings.QDRANT_ENABLED` (default `True` -- Qdrant is always-on infra
+    in this architecture, unlike Neo4j/Vault; see its module docstring)."""
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = QdrantVectorStore()
+    return _vector_store
+
+
+async def close_vector_store() -> None:
+    """Releases the singleton's real client connection pool, if one was ever
+    created. Called from `presentation/main.py`'s `lifespan` shutdown."""
+    global _vector_store
+    if _vector_store is not None:
+        await _vector_store.close()
+        _vector_store = None
+
+
+def get_graph_store() -> GraphStorePort:
+    """Returns the process-wide `Neo4jGraphClient` singleton (RAG-MARKER),
+    constructing it on first call. Already branches real-vs-mock internally
+    on `settings.NEO4J_PASSWORD` presence. Shared by `RetrieveContextUseCase`
+    (read side, `routes/chat.py`) and `IngestDocumentUseCase` (write side,
+    `routes/documents.py`)."""
+    global _graph_store
+    if _graph_store is None:
+        _graph_store = Neo4jGraphClient()
+    return _graph_store
+
+
+async def close_graph_store() -> None:
+    """Releases the singleton's real driver connection pool, if one was ever
+    created. Called from `presentation/main.py`'s `lifespan` shutdown."""
+    global _graph_store
+    if _graph_store is not None:
+        await _graph_store.close()
+        _graph_store = None
+
+
+def get_document_parser() -> DocumentParserPort:
+    """Default (RAG-MARKER) document parser: `PypdfDocumentParser`, pure
+    Python, zero GPU/model download. `MarkerDocumentParser`
+    (`infrastructure/parsing/marker_adapter.py`) stays opt-in behind
+    `MARKER_ENABLED` and is not wired to any route by default -- this is the
+    only parser `POST /documents/ingest` uses today. Cheap/stateless, so
+    (unlike the two singletons above) a fresh instance per request is fine."""
+    return PypdfDocumentParser()

@@ -15,6 +15,26 @@ client = TestClient(app)
 _AUTH_HEADERS = {"Authorization": f"Bearer {create_access_token(uuid4(), iam_role='scientist')}"}
 
 
+def _create_session() -> str:
+    """
+    Creates a real session (via the actual route, persisted through the real
+    repository stack) owned by `_AUTH_HEADERS`'s authenticated caller, and
+    returns its id.
+
+    Needed because `POST /sessions/{id}/chat` now looks up the session and
+    checks its owning workspace before doing anything else (IDOR fix, see
+    `routes/chat.py`) -- a bare `uuid4()` session id that was never created no
+    longer reaches the streaming logic at all, it just 404s.
+    """
+    response = client.post(
+        "/api/v1/sessions",
+        json={"workspace_id": str(uuid4())},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def _parse_sse_events(body: str):
     """Parse a `text/event-stream` body into the list of `{"event", "message"}`
     dicts emitted by `routes/chat.py`'s `_sse` helper (one per `data: ` line)."""
@@ -42,14 +62,13 @@ class _FakeStreamingClient:
 
 
 def test_create_session_endpoint():
-    user_id = str(uuid4())
     workspace_id = str(uuid4())
 
     # This will fail initially (RED) because app/routes are not fully mounted
     # or the dependencies are not mocked.
     response = client.post(
         "/api/v1/sessions",
-        json={"user_id": user_id, "workspace_id": workspace_id},
+        json={"workspace_id": workspace_id},
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 201
@@ -68,7 +87,7 @@ def test_chat_streaming_endpoint(monkeypatch):
         lambda provider_name: _FakeStreamingClient(["Hello", " ", "world"]),
     )
 
-    session_id = str(uuid4())
+    session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/chat",
         json={"prompt": "Test query"},
@@ -90,7 +109,7 @@ def test_chat_streaming_endpoint(monkeypatch):
 
 
 def test_chat_streaming_endpoint_unsupported_provider_returns_400():
-    session_id = str(uuid4())
+    session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/chat",
         json={"prompt": "Test query", "provider": "not-a-real-provider"},
@@ -102,7 +121,7 @@ def test_chat_streaming_endpoint_unsupported_provider_returns_400():
 
 def test_chat_streaming_endpoint_missing_api_key_returns_400(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    session_id = str(uuid4())
+    session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/chat",
         json={"prompt": "Test query", "provider": "deepseek"},
@@ -110,6 +129,15 @@ def test_chat_streaming_endpoint_missing_api_key_returns_400(monkeypatch):
     )
     assert response.status_code == 400
     assert "DEEPSEEK_API_KEY" in response.json()["detail"]
+
+
+def test_chat_streaming_endpoint_nonexistent_session_returns_404():
+    response = client.post(
+        f"/api/v1/sessions/{uuid4()}/chat",
+        json={"prompt": "Test query"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 404
 
 
 def test_chat_streaming_endpoint_provider_failure_yields_error_event(monkeypatch):
@@ -126,7 +154,7 @@ def test_chat_streaming_endpoint_provider_failure_yields_error_event(monkeypatch
         lambda provider_name: _BoomClient(),
     )
 
-    session_id = str(uuid4())
+    session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/chat",
         json={"prompt": "Test query"},

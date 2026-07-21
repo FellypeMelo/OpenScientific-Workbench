@@ -15,9 +15,9 @@ Design notes:
   `presentation/main.py`, not per-route, so every request is covered by default
   and a route cannot accidentally be left unauthenticated by omission.
 - An explicit allowlist (`UNAUTHENTICATED_PATHS`) carves out FastAPI's
-  auto-generated documentation routes. No `/health` endpoint exists anywhere in
-  `src/presentation/routes/` today, so one is deliberately NOT invented here just
-  to allowlist it -- extend the tuple if/when one is added.
+  auto-generated documentation routes, plus `/health` and `/ready` (see
+  `presentation/routes/health.py`) -- orchestrator health probes have no
+  bearer token to present.
 - On success, the decoded claims dict (including `iam_role`) is attached to
   `request.state.user` so downstream route handlers/tests can read it.
 
@@ -46,13 +46,18 @@ logger = logging.getLogger(__name__)
 # built-in interactive docs / schema routes, so `TestClient`/browsers can reach them
 # without a token, PLUS the dev-mode token issuance endpoint itself
 # (`presentation/routes/auth.py`) -- a chicken-and-egg exception: a client cannot
-# be required to already hold a bearer token in order to obtain its first one.
+# be required to already hold a bearer token in order to obtain its first one --
+# PLUS the liveness/readiness probes (`presentation/routes/health.py`): a k8s
+# kubelet/Docker healthcheck has no bearer token to present and must not be
+# rejected with a 401.
 # Do NOT add any other application route here -- auth must apply globally.
 UNAUTHENTICATED_PATHS: Tuple[str, ...] = (
     "/docs",
     "/openapi.json",
     "/redoc",
     "/api/v1/auth/token",
+    "/health",
+    "/ready",
 )
 
 

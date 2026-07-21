@@ -3,11 +3,18 @@ import logging
 from typing import AsyncGenerator
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from src.domain.ports.session_repository import SessionRepositoryPort
+from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
+from src.presentation.dependencies import (
+    get_current_user_id,
+    get_session_repository,
+    get_workspace_repository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +63,29 @@ def _sse(event: str, message: str) -> str:
 
 
 @router.post("/{session_id}/chat")
-async def chat_stream(session_id: UUID, request: ChatRequest):
+async def chat_stream(
+    session_id: UUID,
+    request: ChatRequest,
+    current_user_id: str = Depends(get_current_user_id),
+    session_repo: SessionRepositoryPort = Depends(get_session_repository),
+    workspace_repo: WorkspaceRepositoryPort = Depends(get_workspace_repository),
+):
+    # IDOR fix: this route used to stream a chat response for ANY session id
+    # without checking the session existed, let alone who owns it -- any
+    # authenticated caller could drive (and burn BYOK provider spend against)
+    # another user's session merely by guessing/knowing its UUID. Ownership is
+    # transitive through the session's workspace (see `routes/sessions.py`'s
+    # `get_session` for the identical pattern); a session that doesn't exist,
+    # or whose workspace the caller doesn't own, both 404 identically so this
+    # route cannot be used as an existence oracle.
+    session = await session_repo.get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    workspace = await workspace_repo.get_by_id(session.workspace_id)
+    if not workspace or str(workspace.owner_id) != current_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
     # Resolve the BYOK client *before* opening the SSE stream: a missing API
     # key (`ModelClientFactory.get_client` raises `ValueError`) or an unknown
     # provider name becomes a clean HTTP 400 up front, instead of a stream

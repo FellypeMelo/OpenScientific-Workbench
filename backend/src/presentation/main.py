@@ -1,3 +1,4 @@
+import logging.config
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -5,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.infrastructure.config import settings
 from src.infrastructure.persistence.database import engine, init_models
+from src.infrastructure.telemetry import setup_telemetry
 from src.presentation.middleware.jwt_auth import JWTAuthMiddleware
 from src.presentation.middleware.rate_limit import RateLimitMiddleware
 from src.presentation.middleware.security_headers import SecurityHeadersMiddleware
@@ -13,6 +15,44 @@ from src.presentation.routes.chat import router as chat_router
 from src.presentation.routes.auth import router as auth_router
 from src.presentation.routes.workspaces import router as workspaces_router
 from src.presentation.routes.manuscript import router as manuscript_router
+from src.presentation.routes.health import router as health_router
+
+
+# Structured (JSON) logging, configured at import time so every log line emitted
+# during app startup (including the `lifespan` DB bootstrap below) and by every
+# request thereafter is machine-parseable -- required for the health/readiness
+# checks' `logger.warning(..., exc_info=True)` calls, and any log aggregator
+# (ELK/Loki/CloudWatch/etc.) fronting a real deployment, to be useful. Level is
+# driven by `settings.LOG_LEVEL` (default `INFO`) so it can be raised to `DEBUG`
+# in a specific environment without a code change.
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "json": {
+                # A hand-rolled minimal JSON formatter (no extra dependency like
+                # `python-json-logger`): every field a log aggregator typically
+                # indexes on (timestamp, level, logger name, message) plus
+                # `exc_info` when present, one line per record.
+                "format": (
+                    '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
+                    '"logger": "%(name)s", "message": "%(message)s"}'
+                ),
+            },
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "json",
+            },
+        },
+        "root": {
+            "level": settings.LOG_LEVEL,
+            "handlers": ["console"],
+        },
+    }
+)
 
 
 @asynccontextmanager
@@ -83,6 +123,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# OpenTelemetry instrumentation MUST be wired up here -- at module import time,
+# immediately after the last `app.add_middleware(...)` call above -- and NOT
+# from inside `lifespan()` below (a prior version of this file did that; if you
+# are looking at this because of that comment elsewhere, this is the fix).
+# Reasoning: Starlette builds and caches its middleware stack
+# (`app.middleware_stack`) lazily, the FIRST time the ASGI app is called at
+# all -- and that first call is the `lifespan.startup` message itself, which
+# happens BEFORE the `async def lifespan(app)` generator's body (the code after
+# `yield` notwithstanding, even the code before its `yield`) ever runs.
+# `FastAPIInstrumentor.instrument_app` (inside `setup_telemetry`, see
+# `infrastructure/telemetry.py`) works by monkey-patching
+# `app.build_middleware_stack`, so it MUST run before that first ASGI call
+# builds and caches the (uninstrumented) stack -- calling it from inside
+# `lifespan()` is always too late and silently produces zero spans, with no
+# error raised anywhere to indicate the mistake.
+setup_telemetry(app)
+
 
 # Global Error Handler (Matches error_catalog.md guidelines)
 @app.exception_handler(ValueError)
@@ -122,3 +179,9 @@ app.include_router(chat_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(manuscript_router, prefix="/api/v1")
+
+# Liveness/readiness probes are mounted at the root (no `/api/v1` prefix), to
+# match the plain `/health` / `/ready` paths orchestrators conventionally probe
+# and that `backend/Dockerfile`'s `HEALTHCHECK` and
+# `k8s/backend-deployment.yaml`'s probes are configured against.
+app.include_router(health_router)

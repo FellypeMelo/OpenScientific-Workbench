@@ -36,23 +36,32 @@ spec:
                 name: osw-backend-config
             - secretRef:
                 name: osw-backend-secrets
-          # No `/health` route exists yet (see
-          # `presentation/middleware/jwt_auth.py`'s `UNAUTHENTICATED_PATHS`
-          # docstring) -- `/openapi.json` is one of the few routes the JWT
-          # middleware allowlists unauthenticated, and only serves 200 once
-          # the FastAPI `lifespan` startup step (DB table creation) has
-          # completed. Mirrors the same probe used by `backend/Dockerfile`'s
-          # own `HEALTHCHECK`.
+          # `/ready` (readiness) and `/health` (liveness) are separate probes on
+          # purpose -- see `backend/src/presentation/routes/health.py`'s module
+          # docstring for the full reasoning. Both are allowlisted
+          # unauthenticated in `presentation/middleware/jwt_auth.py`'s
+          # `UNAUTHENTICATED_PATHS`.
+          #
+          # readinessProbe -> /ready: actually checks Postgres (`SELECT 1`) and
+          # Redis (`PING`). A failure here pulls this pod out of the Service's
+          # endpoint list (stop routing traffic to it) WITHOUT restarting it --
+          # the correct reaction to "a downstream dependency is temporarily
+          # unreachable".
           readinessProbe:
             httpGet:
-              path: /openapi.json
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
+          # livenessProbe -> /health: NO downstream dependency calls, so a
+          # Postgres/Redis outage never causes k8s to kill-and-restart this
+          # (perfectly healthy) pod -- only readiness is affected by that.
+          # Liveness failures should mean "this process itself is stuck",
+          # which restarting actually fixes.
           livenessProbe:
             httpGet:
-              path: /openapi.json
+              path: /health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20

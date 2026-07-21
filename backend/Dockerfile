@@ -66,16 +66,17 @@ USER osw
 
 EXPOSE 8000
 
-# Used by `docker-compose.prod.yml` / k8s readiness+liveness probes. No
-# `/health` route exists yet (see `presentation/middleware/jwt_auth.py`'s
-# `UNAUTHENTICATED_PATHS` docstring), so this hits `/openapi.json` instead --
-# one of the few routes the JWT middleware allowlists unauthenticated, and it
-# only returns 200 once FastAPI has fully constructed the app (including the
-# `lifespan` startup step that creates the DB tables). Implemented with the
-# stdlib (`urllib`) rather than curl/wget, neither of which exists in the
+# Used by `docker-compose.prod.yml` / plain `docker run` deployments (k8s uses
+# its own separate readiness+liveness probes instead, see
+# `k8s/backend-deployment.yaml`). Hits `/health` -- the liveness-only probe
+# (see `presentation/routes/health.py`'s module docstring): no downstream
+# Postgres/Redis calls, so a database outage never causes Docker to
+# kill-and-restart an otherwise-healthy container. `/health` is allowlisted
+# unauthenticated in `presentation/middleware/jwt_auth.py`. Implemented with
+# the stdlib (`urllib`) rather than curl/wget, neither of which exists in the
 # `python:3.12-slim` runtime image.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" || exit 1
 
 # Exec form: signals (SIGTERM on `docker stop` / k8s pod termination) reach
 # uvicorn directly instead of a shell process.

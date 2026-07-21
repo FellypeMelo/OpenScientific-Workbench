@@ -22,11 +22,15 @@ dependencies = [
     "pyjwt>=2.8.0",
     "hvac>=2.1.0",
     "pyyaml>=6.0",
-    # OpenTelemetry: `telemetry.py` sets up tracing at app startup (called from the
-    # main.py lifespan) and `gvisor_driver.py` emits sandbox spans, so these are
-    # runtime deps, not dev-only. instrumentation-fastapi pulls the instrumentation
-    # stack; sdk pulls the api. Undeclared before -> only resolved by an incidental
-    # local venv install; a clean CI environment failed importing FastAPIInstrumentor.
+    # OpenTelemetry: `telemetry.py`'s `setup_telemetry()` is called from
+    # `main.py` at MODULE IMPORT TIME (immediately after the last
+    # `app.add_middleware(...)` call, NOT from inside the `lifespan()` context
+    # manager -- see the comment directly above that call in `main.py` for why
+    # calling it from `lifespan()` would silently produce zero spans), and
+    # `gvisor_driver.py` emits sandbox spans, so these are runtime deps, not
+    # dev-only. instrumentation-fastapi pulls the instrumentation stack; sdk
+    # pulls the api. Undeclared before -> only resolved by an incidental local
+    # venv install; a clean CI environment failed importing FastAPIInstrumentor.
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-instrumentation-fastapi>=0.48b0",

@@ -20,6 +20,7 @@ metadata:
     app: osw-backend
 data:
   ENV: "production"
+  LOG_LEVEL: "INFO"
 
   QDRANT_HOST: "qdrant"
   QDRANT_PORT: "6333"

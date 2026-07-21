@@ -14,7 +14,7 @@ Design notes:
   Fase 3 LLM provider clients, etc.) are responsible for validating/raising close to
   the point of use if the resolved value is `None` outside of local development.
 """
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,7 +36,22 @@ class Settings(BaseSettings):
     # `ENV=production` explicitly via the environment; the default here is the
     # permissive one on purpose so a fresh checkout / CI runner / local dev server
     # boots without any `.env` file.
-    ENV: str = "development"
+    #
+    # Constrained to a `Literal` (not a bare `str`) so a typo'd deployment value
+    # (e.g. `ENV=prod` instead of `ENV=production`) fails LOUDLY at `Settings()`
+    # construction time -- `pydantic-settings` raises a `ValidationError` before
+    # the app ever finishes importing -- instead of silently falling through to
+    # `jwt_auth.py`'s permissive "not production" dev branch (ephemeral JWT
+    # secret, etc.) while the operator believes they configured a real
+    # production deployment.
+    ENV: Literal["development", "staging", "production"] = "development"
+
+    # --- Logging (production hardening) ---
+    # Consumed by `logging.config.dictConfig` in `presentation/main.py` to set the
+    # root logger level. Kept a permissive `str` (not a `Literal`) since it is
+    # passed straight through to the stdlib `logging` module, which already
+    # validates level names itself.
+    LOG_LEVEL: str = "INFO"
 
     # --- Relational persistence (Fase 1 - Postgres wiring) ---
     # Defaults to a local SQLite file (via aiosqlite) so the app and test suite can

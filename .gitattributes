@@ -1,0 +1,10 @@
+# Force LF line endings for files parsed/executed inside Linux containers,
+# regardless of the checking-out platform's `core.autocrlf` setting. This
+# repo is actively developed on Windows (where `core.autocrlf=true` rewrites
+# LF -> CRLF in the working tree on checkout by default) -- without this, a
+# fresh checkout could silently reintroduce CRLF into e.g.
+# `docker/vault-entrypoint.sh`, which then fails under `/bin/sh` inside the
+# `vault` container (a stray `\r` on every line breaks shell parsing).
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.hcl text eol=lf

@@ -10,8 +10,8 @@
 # deliberately does NOT include manifests for those datastores themselves
 # (see `k8s/README.md` for the full list of what's out of scope) -- adjust
 # these values to match your actual topology (managed cloud services, a
-# separate StatefulSet set you add later, or the same containers
-# `docker-compose.prod.yml` runs, re-hosted in-cluster).
+# separate StatefulSet set you add later, or the same containers the root
+# `docker-compose.yml` runs, re-hosted in-cluster).
 apiVersion: v1
 kind: ConfigMap
 metadata:

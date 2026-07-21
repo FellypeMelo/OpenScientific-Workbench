@@ -12,16 +12,19 @@ kubectl apply -f k8s/backend-deployment.yaml -f k8s/backend-service.yaml
 kubectl apply -f k8s/frontend-deployment.yaml -f k8s/frontend-service.yaml
 ```
 
-## How this relates to `docker-compose.prod.yml`
+## How this relates to `docker-compose.yml`
 
-`docker-compose.prod.yml` (repo root) is the full single-host stack:
-postgres, redis, neo4j, qdrant, backend, frontend, all in one file. These k8s
-manifests cover **only the app tier** (backend + frontend Deployments/
-Services) -- they assume Postgres/Redis/Neo4j/Qdrant are already reachable
-from the cluster some other way (managed cloud services, a StatefulSet set
-someone adds later, or the same containers re-hosted in-cluster). Point
-`k8s/configmap.yaml`'s `QDRANT_HOST`/`NEO4J_URI` and `k8s/secret.yaml`'s
-`DATABASE_URL`/`REDIS_URL`/`NEO4J_PASSWORD` at wherever those actually run.
+`docker-compose.yml` (repo root) is the canonical single-host stack:
+postgres, redis, neo4j, qdrant, backend, worker (RQ job queue), frontend,
+plus an optional `vault` service behind the `advanced` Compose profile, all
+in one file. These k8s manifests cover **only the app tier** (backend +
+frontend Deployments/Services) -- they assume Postgres/Redis/Neo4j/Qdrant are
+already reachable from the cluster some other way (managed cloud services, a
+StatefulSet set someone adds later, or the same containers re-hosted
+in-cluster). Point `k8s/configmap.yaml`'s `QDRANT_HOST`/`NEO4J_URI` and
+`k8s/secret.yaml`'s `DATABASE_URL`/`REDIS_URL`/`NEO4J_PASSWORD` at wherever
+those actually run. There is no k8s equivalent of the `worker`/`vault`
+services yet -- treat both as compose-only for now.
 
 Both the compose file and these manifests build from the same two
 Dockerfiles (`backend/Dockerfile`, `frontend/Dockerfile`), so an image that

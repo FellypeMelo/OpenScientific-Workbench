@@ -5,7 +5,7 @@
 # `NEXT_PUBLIC_API_URL` is a `NEXT_PUBLIC_*` variable: Next.js inlines it into
 # the client JS bundle at BUILD time (see `frontend/src/lib/api-client.ts`'s
 # `getApiBaseUrl()`), it is not re-read at container start. It must therefore
-# be supplied as a build ARG (`docker-compose.prod.yml` wires this via
+# be supplied as a build ARG (`docker-compose.yml` wires this via
 # `build.args`) -- a plain runtime `environment:` entry on the `frontend`
 # service would have no effect on the already-built client bundle.
 
@@ -77,7 +77,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 EXPOSE 3000
 
-# Used by `docker-compose.prod.yml` / k8s readiness+liveness probes.
+# Used by `docker-compose.yml` / k8s readiness+liveness probes.
 # Implemented with plain Node (no curl/wget dependency needed in this image).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:3000/', (res) => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"

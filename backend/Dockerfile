@@ -39,11 +39,21 @@ RUN pip install --upgrade pip && pip install .
 
 FROM python:3.12-slim AS runtime
 
-# Non-root runtime user (defense in depth -- see docker-compose.prod.yml /
+# Non-root runtime user (defense in depth -- see docker-compose.yml /
 # k8s manifests for the rest of the hardening story: read-only root FS,
 # dropped capabilities, etc. are applied at the orchestrator level).
 RUN groupadd --system --gid 1000 osw && \
     useradd --system --uid 1000 --gid osw --no-create-home --shell /usr/sbin/nologin osw
+
+# Bubblewrap (bwrap) -- unprivileged Linux sandboxing for code execution,
+# replacing the earlier gVisor/runsc design (see
+# `src/infrastructure/sandbox/`). No Docker socket exposure and no second
+# privileged container needed: `bwrap` runs as a regular subprocess using
+# user namespaces. Installed here so it's on PATH in the runtime image; a
+# later phase adds the Python adapter that actually shells out to it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends bubblewrap && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -74,7 +84,7 @@ USER osw
 
 EXPOSE 8000
 
-# Used by `docker-compose.prod.yml` / plain `docker run` deployments (k8s uses
+# Used by `docker-compose.yml` / plain `docker run` deployments (k8s uses
 # its own separate readiness+liveness probes instead, see
 # `k8s/backend-deployment.yaml`). Hits `/health` -- the liveness-only probe
 # (see `presentation/routes/health.py`'s module docstring): no downstream

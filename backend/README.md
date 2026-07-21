@@ -36,11 +36,11 @@ cd backend
 alembic upgrade head
 ```
 
-Or, against the built container image (same image `docker-compose.prod.yml`'s
-`backend` service runs), before starting the stack:
+Or, against the built container image (same image the root
+`docker-compose.yml`'s `backend` service runs), before starting the stack:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm backend alembic upgrade head
+docker compose run --rm backend alembic upgrade head
 ```
 
 **Generating a new migration** after changing `models.py`:

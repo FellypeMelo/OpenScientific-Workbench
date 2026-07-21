@@ -112,3 +112,55 @@ async def test_run_stops_when_token_budget_exhausted():
     assert result.budget_exhausted is True
     assert result.is_complete is False
     assert result.get_node("n2").status == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_run_fires_progress_hooks_in_order_when_provided():
+    """Optional progress hooks (on_plan/on_node_start/on_node_update) are
+    additive: they default to None (see the other tests above, which pass none
+    of them and still work unmodified), and when provided are called
+    synchronously at the natural points in run()."""
+    planner = FakePlanner(_linear_plan())
+    executor = FakeExecutor({"n1": 1.0, "n2": 1.0})
+    events: list[tuple] = []
+
+    orch = MCTSOrchestrator(
+        planner=planner,
+        executor=executor,
+        token_budget=1000,
+        step_cost=100,
+        on_plan=lambda snapshot: events.append(("plan", len(snapshot.nodes))),
+        on_node_start=lambda node: events.append(("start", node.id)),
+        on_node_update=lambda node: events.append(("update", node.id, node.status)),
+    )
+
+    await orch.run("task")
+
+    assert events == [
+        ("plan", 2),
+        ("start", "n1"),
+        ("update", "n1", "COMPLETED"),
+        ("start", "n2"),
+        ("update", "n2", "COMPLETED"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_fires_node_update_hook_with_pruned_status():
+    planner = FakePlanner(_linear_plan())
+    executor = FakeExecutor({"n1": -1.0})
+    updates: list[str] = []
+
+    orch = MCTSOrchestrator(
+        planner=planner,
+        executor=executor,
+        token_budget=1000,
+        step_cost=100,
+        on_node_update=lambda node: updates.append(node.status),
+    )
+
+    await orch.run("task")
+
+    # n2 is pruned by propagation, never simulated -> never fires on_node_update
+    # for it (only n1, the one that was actually simulated, does).
+    assert updates == ["PRUNED"]

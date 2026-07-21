@@ -1,7 +1,9 @@
+from typing import Callable, Optional
 from uuid import UUID
 from datetime import datetime
 
 from src.domain.entities.agent_session import AgentSession
+from src.domain.entities.review import ReviewVerdict
 from src.domain.ports.reviewer import ReviewerPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.services.mcts_orchestrator import MCTSOrchestrator
@@ -18,6 +20,12 @@ class SubmitTaskUseCase:
     result is retried (ARTIFACT_REJECTED -> DAG_GENERATION) up to
     ``max_review_attempts`` times. All collaborators are injected ports/services,
     so the use case stays free of infrastructure.
+
+    ``on_review`` is an optional progress hook (defaults to ``None``, a no-op),
+    called synchronously right after each critic verdict with
+    ``(verdict, attempt, max_review_attempts)`` -- a live caller (e.g. an SSE
+    route) can use ``attempt == max_review_attempts and not verdict.approved`` to
+    tell a final rejection apart from a rejection that will still be retried.
     """
 
     def __init__(
@@ -28,6 +36,7 @@ class SubmitTaskUseCase:
         sanitizer: PIISanitizer = None,
         reviewer: ReviewerPort = None,
         max_review_attempts: int = 3,
+        on_review: Optional[Callable[[ReviewVerdict, int, int], None]] = None,
     ):
         self.session_repo = session_repo
         self.orchestrator = orchestrator
@@ -35,6 +44,7 @@ class SubmitTaskUseCase:
         self.sanitizer = sanitizer or PIISanitizer()
         self.reviewer = reviewer or NumericReviewer()
         self.max_review_attempts = max_review_attempts
+        self.on_review = on_review
 
     async def execute(self, session_id: UUID, task_nl: str) -> AgentSession:
         session = await self.session_repo.get_by_id(session_id)
@@ -58,6 +68,8 @@ class SubmitTaskUseCase:
 
             # Critic: gate the result on numeric tolerance.
             verdict = await self.reviewer.review(snapshot)
+            if self.on_review:
+                self.on_review(verdict, session.dag_generation_attempts, self.max_review_attempts)
             if verdict.approved:
                 session.transition_to("SNAPSHOT_TAKEN")
                 session.dag_snapshot = snapshot.to_dict()

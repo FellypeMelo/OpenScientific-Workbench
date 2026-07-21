@@ -1,3 +1,5 @@
+import type { BackendDAGNode } from "@/lib/api-client";
+
 export interface Message {
   role: "user" | "agent";
   text: string;
@@ -47,3 +49,37 @@ export const initialDagNodes: DAGNode[] = [
   { id: "2", label: "MCTS Node A: Analyze FASTQ", status: "pending", parentId: "1" },
   { id: "3", label: "MCTS Node B: Predict folding", status: "pending", parentId: "1" },
 ];
+
+/**
+ * Maps one backend `DAGNode` (see `lib/api-client.ts`'s `BackendDAGNode`,
+ * mirroring `backend/src/domain/entities/dag.py`) onto the frontend's
+ * `DAGNode` shape consumed by `MCTSGraph`.
+ *
+ * The backend has no "running" node status (only PENDING/COMPLETED/PRUNED) --
+ * that is a purely frontend concept, derived from a live `node_start` SSE
+ * event rather than from `status` itself, so callers pass it explicitly via
+ * `overrideStatus` when handling that event.
+ *
+ * Backend nodes carry a free-text `description`, not a `label` -- this
+ * mapping is REQUIRED (not optional) so a mapped node is never shipped with
+ * empty label text: `description` always backs `label`, falling back to the
+ * node id only in the (should-never-happen) case of an empty description.
+ */
+export function mapBackendNode(
+  node: BackendDAGNode,
+  overrideStatus?: DAGNode["status"]
+): DAGNode {
+  const status: DAGNode["status"] =
+    overrideStatus ??
+    (node.status === "COMPLETED" ? "success" : node.status === "PRUNED" ? "failed" : "pending");
+
+  return {
+    id: node.id,
+    label: node.description || `Node ${node.id}`,
+    status,
+    // MCTSGraph's layout only understands a single parent per node; the
+    // backend DAG allows multiple dependencies, so the first one (if any) is
+    // used to place this node under its primary prerequisite.
+    parentId: node.dependencies[0],
+  };
+}

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { forkWorkspace, streamChat } from "@/lib/api-client";
+import { forkWorkspace, streamChat, streamTask, type TaskEvent } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth";
 
 import { Header } from "./Header";
@@ -23,13 +23,20 @@ export interface ChatPanelProps {
   /** Forwards SSE lifecycle events so the parent can drive `MCTSGraph`'s node
    * statuses -- see `app/page.tsx`. */
   onDagEvent: (event: "planning" | "completed" | "error") => void;
+  /** Forwards raw MCTS task-execution SSE events (RF-001/RF-002, see
+   * `POST /api/v1/sessions/{session_id}/tasks`) so the parent can drive real
+   * DAG node state and the actor-critic review-status strip -- see
+   * `app/page.tsx`. Optional so callers that only care about chat (and
+   * existing tests) do not need to pass it. */
+  onTaskEvent?: (event: TaskEvent) => void;
 }
 
-export function ChatPanel({ sessionId, workspaceId, onDagEvent }: ChatPanelProps) {
+export function ChatPanel({ sessionId, workspaceId, onDagEvent, onTaskEvent }: ChatPanelProps) {
   const { isLoading: authLoading, error: authError } = useAuth();
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isRunningTask, setIsRunningTask] = useState(false);
   const [forkState, setForkState] = useState<ForkState>({ status: "idle" });
 
   const replaceLastAgentMessage = (text: string) => {
@@ -87,7 +94,28 @@ export function ChatPanel({ sessionId, workspaceId, onDagEvent }: ChatPanelProps
     }
   };
 
-  const sendDisabled = isStreaming || authLoading || !sessionId;
+  const handleSubmitTask = async () => {
+    if (!query.trim() || !sessionId) return;
+
+    const task = query;
+    setQuery("");
+    setIsRunningTask(true);
+    try {
+      for await (const evt of streamTask(sessionId, task)) {
+        onTaskEvent?.(evt);
+      }
+    } catch (err) {
+      onTaskEvent?.({
+        event: "error",
+        message: err instanceof Error ? err.message : "Task execution failed.",
+      });
+    } finally {
+      setIsRunningTask(false);
+    }
+  };
+
+  const sendDisabled = isStreaming || isRunningTask || authLoading || !sessionId;
+  const taskDisabled = isStreaming || isRunningTask || authLoading || !sessionId;
   const forkDisabled = forkState.status === "loading" || !workspaceId;
 
   return (
@@ -150,6 +178,13 @@ export function ChatPanel({ sessionId, workspaceId, onDagEvent }: ChatPanelProps
             {forkState.status === "loading" ? "Bifurcando..." : "Fork"}
           </button>
         </div>
+        <button
+          onClick={handleSubmitTask}
+          disabled={taskDisabled}
+          className="w-full border border-[#404060] hover:bg-[#181822] text-[#a0a0b8] hover:text-white py-2 rounded-lg text-sm font-semibold transition-all disabled:opacity-50"
+        >
+          {isRunningTask ? "Executando MCTS..." : "Executar Tarefa (MCTS)"}
+        </button>
         {forkState.status === "success" && (
           <p data-testid="fork-success" className="text-xs text-[#86ffcf]">
             Fork criado: {forkState.path}

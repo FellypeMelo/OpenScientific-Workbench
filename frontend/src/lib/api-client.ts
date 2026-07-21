@@ -142,27 +142,15 @@ export interface ChatEvent {
 }
 
 /**
- * `POST /api/v1/sessions/{session_id}/chat` -- consumes the `text/event-stream`
- * response from `backend/src/presentation/routes/chat.py` and yields one parsed
- * `ChatEvent` per `data: ` frame.
+ * Shared `text/event-stream` line-reading loop, extracted so both `streamChat`
+ * (below) and `streamTask` (see `types.ts`'s `BackendDAGNode` / `TaskEvent`)
+ * parse SSE frames identically instead of duplicating the buffering logic.
  *
- * Buffers partial chunks across `reader.read()` calls (a `TextDecoderStream`
- * chunk boundary is not guaranteed to land on a line boundary), which the
- * original inline implementation in `app/page.tsx` did not do -- this is a
- * correctness improvement, not just a relocation.
+ * Buffers partial chunks across `reader.read()` calls (a stream chunk boundary
+ * is not guaranteed to land on a line boundary) and parses every `data: ` line
+ * as JSON, skipping malformed frames rather than aborting the whole stream.
  */
-export async function* streamChat(
-  sessionId: string,
-  prompt: string,
-  provider: string = "deepseek",
-  signal?: AbortSignal
-): AsyncGenerator<ChatEvent, void, unknown> {
-  const response = await apiFetch(`/api/v1/sessions/${sessionId}/chat`, {
-    method: "POST",
-    body: JSON.stringify({ prompt, provider }),
-    signal,
-  });
-
+async function* readSSE<T>(response: Response): AsyncGenerator<T, void, unknown> {
   if (!response.body) return;
 
   const reader = response.body.getReader();
@@ -183,7 +171,7 @@ export async function* streamChat(
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
         try {
-          yield JSON.parse(line.slice("data: ".length)) as ChatEvent;
+          yield JSON.parse(line.slice("data: ".length)) as T;
         } catch {
           // Malformed SSE frame -- skip it rather than aborting the whole stream.
         }
@@ -192,6 +180,75 @@ export async function* streamChat(
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * `POST /api/v1/sessions/{session_id}/chat` -- consumes the `text/event-stream`
+ * response from `backend/src/presentation/routes/chat.py` and yields one parsed
+ * `ChatEvent` per `data: ` frame.
+ */
+export async function* streamChat(
+  sessionId: string,
+  prompt: string,
+  provider: string = "deepseek",
+  signal?: AbortSignal
+): AsyncGenerator<ChatEvent, void, unknown> {
+  const response = await apiFetch(`/api/v1/sessions/${sessionId}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ prompt, provider }),
+    signal,
+  });
+  yield* readSSE<ChatEvent>(response);
+}
+
+/** A single sub-task node exactly as serialized by the backend's
+ * `DAGNode.model_dump()` (see `backend/src/domain/entities/dag.py`). */
+export interface BackendDAGNode {
+  id: string;
+  description: string;
+  dependencies: string[];
+  reward: number | null;
+  status: "PENDING" | "COMPLETED" | "PRUNED" | string;
+  output?: Record<string, unknown> | null;
+  expected?: Record<string, unknown> | null;
+}
+
+/**
+ * One SSE frame emitted by `POST /api/v1/sessions/{session_id}/tasks` (see
+ * `backend/src/presentation/routes/tasks.py`), which wires the MCTS-over-DAG
+ * orchestrator + actor-critic reviewer into a live streamed run.
+ */
+export type TaskEvent =
+  | { event: "dag_planned"; nodes: BackendDAGNode[]; edges: [string, string][]; tokens_spent: number; budget_exhausted: boolean; completed: boolean }
+  | { event: "node_start"; node: BackendDAGNode }
+  | { event: "node_update"; node: BackendDAGNode }
+  | { event: "review"; approved: boolean; reason: string; attempt: number; max_attempts: number }
+  | {
+      event: "completed";
+      session_status: string;
+      dag_snapshot: Record<string, unknown>;
+      dag_generation_attempts: number;
+    }
+  | { event: "error"; message: string };
+
+/**
+ * `POST /api/v1/sessions/{session_id}/tasks` -- consumes the `text/event-stream`
+ * response from `backend/src/presentation/routes/tasks.py` and yields one parsed
+ * `TaskEvent` per `data: ` frame. This is the live MCTS run (RF-001/RF-002),
+ * distinct from `streamChat`'s plain conversational SSE stream.
+ */
+export async function* streamTask(
+  sessionId: string,
+  task: string,
+  provider: string = "deepseek",
+  signal?: AbortSignal
+): AsyncGenerator<TaskEvent, void, unknown> {
+  const response = await apiFetch(`/api/v1/sessions/${sessionId}/tasks`, {
+    method: "POST",
+    body: JSON.stringify({ task, provider }),
+    signal,
+  });
+  yield* readSSE<TaskEvent>(response);
 }
 
 /**
@@ -217,6 +274,7 @@ export const apiClient = {
   getSession,
   forkWorkspace,
   streamChat,
+  streamTask,
   compileManuscript,
 };
 

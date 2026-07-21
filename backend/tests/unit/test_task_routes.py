@@ -1,0 +1,212 @@
+"""RF-001/RF-002: POST /sessions/{session_id}/tasks -- the live wiring of
+MCTSOrchestrator + SubmitTaskUseCase + NumericReviewer behind an SSE route.
+
+Mirrors `test_presentation_routes.py`'s chat-route test style: the BYOK
+`ModelProviderPort` is faked at the `ModelClientFactory.get_client` boundary
+(the actual transport edge), session/workspace ownership goes through the real
+DB-backed repositories (via the autouse `_isolated_test_database` fixture in
+`conftest.py`), and nothing about domain business logic is faked.
+"""
+import json
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from src.presentation.main import app
+from src.presentation.middleware.jwt_auth import create_access_token
+
+client = TestClient(app)
+
+_AUTH_HEADERS = {"Authorization": f"Bearer {create_access_token(uuid4(), iam_role='scientist')}"}
+
+_PLAN_JSON = json.dumps(
+    {
+        "nodes": [
+            {"id": "n1", "description": "load sequence data", "dependencies": []},
+            {"id": "n2", "description": "run alignment", "dependencies": ["n1"]},
+        ]
+    }
+)
+
+
+def _create_session() -> str:
+    response = client.post(
+        "/api/v1/sessions",
+        json={"workspace_id": str(uuid4())},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _parse_sse_events(body: str):
+    events = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            events.append(json.loads(line[len("data: "):]))
+    return events
+
+
+class _FakeTaskClient:
+    """Stand-in `ModelProviderPort`: the FIRST `generate_response` call is
+    `LLMTaskPlanner.plan()` (always exactly one call, before any node
+    simulation -- see `MCTSOrchestrator.run`), every subsequent call is
+    `LLMNodeExecutor.simulate()` for one ready node."""
+
+    def __init__(self, plan_json: str = _PLAN_JSON, node_reply: str = "ok", node_error: Exception = None):
+        self._plan_json = plan_json
+        self._node_reply = node_reply
+        self._node_error = node_error
+        self.calls = 0
+
+    async def generate_response(self, prompt, system_instruction, temperature=0.0):
+        self.calls += 1
+        if self.calls == 1:
+            return self._plan_json
+        if self._node_error is not None:
+            raise self._node_error
+        return self._node_reply
+
+    async def generate_stream(self, prompt, system_instruction, temperature=0.0):
+        raise NotImplementedError
+        yield ""  # pragma: no cover - unreachable, makes this an async generator
+
+
+def test_submit_task_stream_emits_full_actor_critic_event_sequence(monkeypatch):
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes"},
+        headers=_AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+    events = _parse_sse_events(response.text)
+    event_names = [e["event"] for e in events]
+    assert event_names == [
+        "dag_planned",
+        "node_start",
+        "node_update",
+        "node_start",
+        "node_update",
+        "review",
+        "completed",
+    ]
+
+    planned = events[0]
+    assert len(planned["nodes"]) == 2
+    assert [n["id"] for n in planned["nodes"]] == ["n1", "n2"]
+
+    node_starts = [e for e in events if e["event"] == "node_start"]
+    assert [e["node"]["id"] for e in node_starts] == ["n1", "n2"]
+
+    node_updates = [e for e in events if e["event"] == "node_update"]
+    assert [e["node"]["status"] for e in node_updates] == ["COMPLETED", "COMPLETED"]
+    # The LLM node executor's answer is written onto the node's output.
+    assert node_updates[0]["node"]["output"] == {"text": "ok"}
+
+    review = events[5]
+    assert review["approved"] is True
+    assert review["attempt"] == 1
+    assert review["max_attempts"] == 3
+
+    completed = events[6]
+    assert completed["session_status"] == "SNAPSHOT_TAKEN"
+    assert completed["dag_generation_attempts"] == 1
+    assert "nodes" in completed["dag_snapshot"]
+
+
+def test_submit_task_stream_persists_dag_generation_attempts_across_separate_calls(monkeypatch):
+    """Confirms the new route benefits from the already-fixed persistence bug
+    (see the persistence phase's commit adding the `dag_generation_attempts`
+    column to `AgentSessionModel`): the counter accumulates across two
+    completely separate HTTP requests to this route for the same session,
+    instead of resetting to 0 because a fresh request rebuilds the repository
+    from a brand-new DB-backed AsyncSession every time."""
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(),
+    )
+
+    session_id = _create_session()
+
+    first = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes"},
+        headers=_AUTH_HEADERS,
+    )
+    first_completed = [e for e in _parse_sse_events(first.text) if e["event"] == "completed"][0]
+    assert first_completed["dag_generation_attempts"] == 1
+
+    second = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes again"},
+        headers=_AUTH_HEADERS,
+    )
+    second_completed = [e for e in _parse_sse_events(second.text) if e["event"] == "completed"][0]
+    # Not reset to 1 -- picked up the persisted count (1) from the first call
+    # and incremented it, proving the counter survives across separate calls.
+    assert second_completed["dag_generation_attempts"] == 2
+
+
+def test_submit_task_stream_unsupported_provider_returns_400():
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes", "provider": "not-a-real-provider"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 400
+    assert "Unsupported model provider" in response.json()["detail"]
+
+
+def test_submit_task_stream_missing_api_key_returns_400(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes", "provider": "deepseek"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 400
+    assert "DEEPSEEK_API_KEY" in response.json()["detail"]
+
+
+def test_submit_task_stream_nonexistent_session_returns_404():
+    response = client.post(
+        f"/api/v1/sessions/{uuid4()}/tasks",
+        json={"task": "Align these genes"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_submit_task_stream_planner_failure_yields_error_event(monkeypatch):
+    # A model that never returns parseable JSON makes LLMTaskPlanner.plan()
+    # raise -- the failure happens deep inside the actor-critic loop, after the
+    # SSE stream has already opened with a 200, so it must surface as a clean
+    # SSE error frame instead of a crashed request (mirrors chat.py's
+    # provider-failure test).
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(plan_json="I cannot help with that."),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes"},
+        headers=_AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert events[-1]["event"] == "error"
+    assert "plan" in events[-1]["message"]

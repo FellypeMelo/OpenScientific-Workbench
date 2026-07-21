@@ -112,6 +112,53 @@ async def test_submit_task_critic_rejection_retries_then_caps():
 
 
 @pytest.mark.asyncio
+async def test_submit_task_fires_on_review_hook_with_verdict_attempt_and_cap():
+    session_repo = MockSessionRepository()
+    session = AgentSession(workspace_id=uuid4())
+    await session_repo.save(session)
+
+    calls = []
+    use_case = SubmitTaskUseCase(
+        session_repo=session_repo,
+        orchestrator=FakeOrchestrator(_resolved_snapshot()),
+        default_token_limit=1000,
+        on_review=lambda verdict, attempt, max_attempts: calls.append(
+            (verdict.approved, attempt, max_attempts)
+        ),
+    )
+
+    await use_case.execute(session_id=session.id, task_nl="Solve gene sequencing")
+
+    assert calls == [(True, 1, 3)]
+
+
+@pytest.mark.asyncio
+async def test_submit_task_on_review_hook_fires_once_per_rejected_attempt():
+    session_repo = MockSessionRepository()
+    session = AgentSession(workspace_id=uuid4())
+    await session_repo.save(session)
+
+    calls = []
+    use_case = SubmitTaskUseCase(
+        session_repo=session_repo,
+        orchestrator=FakeOrchestrator(_resolved_snapshot()),
+        reviewer=RejectingReviewer(),
+        default_token_limit=1000,
+        max_review_attempts=2,
+        on_review=lambda verdict, attempt, max_attempts: calls.append(
+            (verdict.approved, attempt, max_attempts)
+        ),
+    )
+
+    await use_case.execute(session_id=session.id, task_nl="dock ligand")
+
+    # Final call (attempt == max_attempts, not approved) is the "final
+    # rejection" a live caller (e.g. the SSE task route) tells apart from an
+    # earlier "still retrying" rejection.
+    assert calls == [(False, 1, 2), (False, 2, 2)]
+
+
+@pytest.mark.asyncio
 async def test_submit_task_budget_exceeded_before_running_orchestrator():
     session_repo = MockSessionRepository()
     session = AgentSession(workspace_id=uuid4())

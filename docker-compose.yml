@@ -21,13 +21,14 @@
 # - postgres / redis / neo4j / qdrant: persistent named volumes + healthchecks.
 # - backend: built from `backend/Dockerfile`; waits on all four datastores via
 #   `depends_on: condition: service_healthy`; serves the FastAPI app.
-# - worker: the SAME backend image, running `rq worker osw-jobs` instead of
-#   uvicorn -- the local (non-Slurm) HPC job queue (`HPC_BACKEND=local`).
-#   PLACEHOLDER: `rq` is not yet a declared dependency in
-#   `backend/pyproject.toml` as of this commit -- a later phase (the HPC
-#   backend-abstraction phase) adds it. Until then this container will build
-#   and start but the `rq worker` command will fail with "command not found";
-#   that is expected and does not block `backend`/`frontend` from working.
+# - worker: the SAME backend image, running `scripts/run_worker.py` instead
+#   of uvicorn -- the local (non-Slurm) HPC job queue (`HPC_BACKEND=local`),
+#   consuming the `"osw-jobs"` RQ queue (see
+#   `backend/src/infrastructure/hpc/local_job_dispatcher.py`). Runs that
+#   dedicated script rather than the bare `rq worker osw-jobs` CLI command so
+#   its Redis connection is built from this same file's `REDIS_URL` (the
+#   Compose service name `redis`), not RQ's own `localhost:6379` default --
+#   see the script's module docstring for the full reasoning.
 # - frontend: built from `frontend/Dockerfile`.
 # - vault: HashiCorp Vault, gated behind the `advanced` Compose profile (NOT
 #   started by a plain `docker compose up`) -- only needed for the optional,
@@ -49,20 +50,20 @@ x-backend-env: &backend-env
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_password_change_me}
   QDRANT_HOST: qdrant
   QDRANT_PORT: 6333
-  # HPC backend selection (Fase 5 - job queue abstraction). "local" runs jobs
-  # through the `worker` service above (Redis-backed RQ queue); "slurm"
-  # dispatches over SSH via the existing `SlurmSSHDispatcher`/`VaultClient`
-  # code, for operators who do have a real cluster (requires the `advanced`
-  # profile's `vault` service, or an externally-reachable Vault, plus the
-  # SLURM_SSH_* vars below). Not yet read by `infrastructure/config.py` as of
-  # this commit -- a later phase wires this flag into `Settings`.
+  # HPC backend selection (Fase 5 - job queue abstraction). "local" (default)
+  # runs jobs through the `worker` service above (Redis-backed RQ queue,
+  # `LocalJobDispatcher`); "slurm" dispatches over SSH via the existing
+  # `SlurmSSHDispatcher`/`VaultClient` code, for operators who do have a real
+  # cluster (requires the `advanced` profile's `vault` service, or an
+  # externally-reachable Vault, plus the SLURM_SSH_* vars below). Read by
+  # `infrastructure/config.py::Settings.HPC_BACKEND` and selected in
+  # `presentation/dependencies.py::get_hpc_dispatcher`.
   HPC_BACKEND: ${HPC_BACKEND:-local}
   # Sandboxed code execution runtime (replaces the earlier gVisor/runsc
   # design). "bubblewrap" shells out to the `bwrap` binary installed in
-  # `backend/Dockerfile`. Not yet read by `infrastructure/config.py` as of
-  # this commit -- a later phase wires this flag into `Settings` and adds the
-  # adapter that actually shells to `bwrap` (must fail loudly, never silently
-  # run unsandboxed, per this project's security rules).
+  # `backend/Dockerfile`, via `infrastructure/sandbox/bubblewrap_driver.py`
+  # (must fail loudly, never silently run unsandboxed, per this project's
+  # security rules).
   SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-bubblewrap}
   # Only relevant to the optional `advanced`-profile Slurm-SSH HPC path (see
   # the `vault` service below) -- irrelevant, and safely ignored, when
@@ -171,11 +172,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    # See the file header: `rq` is not a runtime dependency yet, so this
-    # command will fail until a later phase adds it to
-    # `backend/pyproject.toml`. Kept here now so the queue topology
-    # (`osw-jobs`) and wiring are in place ahead of that.
-    command: ["rq", "worker", "osw-jobs"]
+    # See the file header + `backend/scripts/run_worker.py`'s module
+    # docstring for why this is a dedicated script rather than the bare
+    # `rq worker osw-jobs` CLI command.
+    command: ["python", "scripts/run_worker.py"]
     environment: *backend-env
     depends_on:
       postgres:

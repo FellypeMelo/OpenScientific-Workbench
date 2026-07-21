@@ -25,6 +25,14 @@ dependencies = [
     # `backend/README.md`), so the container image that runs that step needs it.
     "alembic>=1.13.0",
     "redis>=5.0.4",
+    # Local (default) HPC job queue backend (RF-006/RNF-003/RNF-008 gap
+    # closure): `LocalJobDispatcher` (see
+    # `infrastructure/hpc/local_job_dispatcher.py`) enqueues onto an RQ queue
+    # backed by the same Redis instance as everything else above, and
+    # `scripts/run_worker.py` / the `worker` service in `docker-compose.yml`
+    # consume it. Slurm (`HPC_BACKEND=slurm`) remains the optional, dormant
+    # alternative and does not need this dependency.
+    "rq>=2.0.0",
     "neo4j>=5.21.0",
     "qdrant-client>=1.9.1",
     "paramiko>=3.4.0",

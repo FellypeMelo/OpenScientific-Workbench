@@ -17,6 +17,7 @@ from src.presentation.routes.tasks import router as tasks_router
 from src.presentation.routes.auth import router as auth_router
 from src.presentation.routes.workspaces import router as workspaces_router
 from src.presentation.routes.manuscript import router as manuscript_router
+from src.presentation.routes.hpc import router as hpc_router
 from src.presentation.routes.health import router as health_router
 
 
@@ -222,6 +223,7 @@ app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(manuscript_router, prefix="/api/v1")
+app.include_router(hpc_router, prefix="/api/v1")
 
 # Liveness/readiness probes are mounted at the root (no `/api/v1` prefix), to
 # match the plain `/health` / `/ready` paths orchestrators conventionally probe

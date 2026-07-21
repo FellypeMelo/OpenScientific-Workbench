@@ -70,6 +70,11 @@ COPY --from=builder /opt/venv /opt/venv
 # Clean copy of application code only (no tests/, no .venv, no .git, no
 # .egg-info build leftovers -- see backend/.dockerignore).
 COPY src ./src
+# `scripts/run_worker.py` -- the RQ worker entrypoint for the local
+# (HPC_BACKEND=local, default) job queue backend, run by `docker-compose.yml`'s
+# `worker` service instead of uvicorn. See that script's module docstring for
+# why it exists instead of the bare `rq worker osw-jobs` CLI command.
+COPY scripts ./scripts
 # Alembic migration sources (see `backend/migrations/`). NOT run automatically by
 # the CMD below -- `presentation/main.py`'s `lifespan` only bootstraps tables via
 # `create_all` when `ENV != production` (see that module). This same image is what

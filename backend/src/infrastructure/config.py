@@ -83,12 +83,34 @@ class Settings(BaseSettings):
     # `NEO4J_USER` above.
     VAULT_SSH_ROLE: str = "hpc-ssh-role"
 
+    # --- HPC job dispatch backend selection (RF-006/RNF-003/RNF-008 gap closure) ---
+    # Which `HPCJobDispatcherPort` adapter `presentation/dependencies.py`'s
+    # `get_hpc_dispatcher()` constructs:
+    #   - "local" (default): `LocalJobDispatcher` (see
+    #     `infrastructure/hpc/local_job_dispatcher.py`) -- a Redis-backed RQ
+    #     queue ("osw-jobs") consumed by `scripts/run_worker.py` /
+    #     `docker-compose.yml`'s `worker` service. Matches this project's
+    #     locked architecture (single local Linux server, no external
+    #     cluster) and needs no extra infra beyond the Redis instance every
+    #     other adapter here already uses.
+    #   - "slurm": `SlurmSSHDispatcher` (see
+    #     `infrastructure/hpc/slurm_dispatcher.py`) -- real SSH dispatch to an
+    #     actual Slurm cluster, for operators who have one. Dormant by
+    #     default; only reachable by explicitly setting this to "slurm" (and,
+    #     for real dispatch rather than its own mock fallback, the
+    #     `SLURM_SSH_*` settings below).
+    # Constrained to a `Literal` for the same reason as `ENV` above: a typo'd
+    # value fails loudly at `Settings()` construction instead of silently
+    # falling through to a default nobody chose on purpose.
+    HPC_BACKEND: Literal["local", "slurm"] = "local"
+
     # --- HPC / Slurm dispatch (Fase 4 - paramiko SSH) ---
     # Real `sbatch` dispatch over SSH (see `infrastructure/hpc/slurm_dispatcher.py`)
     # is only attempted when ALL THREE of these are configured. Any one of them
     # missing means "no real HPC gateway is reachable from here" (a fresh
     # checkout, CI runner, or local dev machine), so the dispatcher falls back to
     # its deterministic mock job id instead of failing or silently doing nothing.
+    # Only relevant when HPC_BACKEND=="slurm" above.
     SLURM_SSH_HOST: Optional[str] = None
     SLURM_SSH_USER: Optional[str] = None
     SLURM_SSH_KEY_PATH: Optional[str] = None

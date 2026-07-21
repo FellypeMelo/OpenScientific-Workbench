@@ -60,6 +60,14 @@ COPY --from=builder /opt/venv /opt/venv
 # Clean copy of application code only (no tests/, no .venv, no .git, no
 # .egg-info build leftovers -- see backend/.dockerignore).
 COPY src ./src
+# Alembic migration sources (see `backend/migrations/`). NOT run automatically by
+# the CMD below -- `presentation/main.py`'s `lifespan` only bootstraps tables via
+# `create_all` when `ENV != production` (see that module). This same image is what
+# a deploy runs `alembic upgrade head` against instead, as a separate init step,
+# before any replica starts serving traffic (`docker compose run --rm backend
+# alembic upgrade head`; see `backend/README.md` for the exact command).
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN chown -R osw:osw /app
 USER osw

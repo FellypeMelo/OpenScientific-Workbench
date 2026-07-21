@@ -57,10 +57,21 @@ logging.config.dictConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure the ORM tables exist. There is no Alembic migration tool wired
-    # up yet (Fase 1 scope is limited to fiar Postgres na aplicação), so `create_all`
-    # is used to bootstrap a fresh SQLite/Postgres database for local dev and tests.
-    await init_models()
+    # Startup: bootstrap the ORM tables ONLY for dev/test convenience.
+    #
+    # Alembic is now wired up (see `backend/migrations/`, `backend/alembic.ini`), and
+    # is the source of truth for schema changes in any real deployment. Running
+    # `Base.metadata.create_all` (via `init_models()`) inside the app process is a
+    # dev/CI-only shortcut: it lets a fresh checkout / test runner boot against an
+    # empty SQLite/Postgres database with zero setup, but it does NOT know how to
+    # apply incremental schema changes, does NOT record migration history, and
+    # racing it against a real production rollout (e.g. multiple replicas booting
+    # concurrently) is exactly the kind of uncoordinated-DDL hazard Alembic exists to
+    # prevent. In production this step is skipped entirely; the deployment process
+    # MUST run `alembic upgrade head` (see `backend/README.md`) as a separate, single
+    # init step BEFORE any app replica starts serving traffic.
+    if settings.ENV != "production":
+        await init_models()
     yield
     # Shutdown: dispose the engine's connection pool cleanly.
     await engine.dispose()

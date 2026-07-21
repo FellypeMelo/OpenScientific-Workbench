@@ -66,6 +66,32 @@ async def test_postgres_repositories_integration(db_session):
 
 
 @pytest.mark.asyncio
+async def test_postgres_session_repository_persists_dag_generation_attempts(db_session):
+    """Regression test for the RF-002 bounded-retry counter reset bug: saving a
+    session with a non-zero `dag_generation_attempts` and re-fetching it through a
+    brand-new `PostgresSessionRepository` instance (against the same underlying DB)
+    must return the same count, not silently reset it to 0.
+
+    A fresh repo instance is used deliberately -- the bug was previously masked by
+    the in-memory repository returning the *same object by reference*, which trivially
+    "remembers" the attribute regardless of whether the SQL mapping is correct.
+    """
+    workspace_id = uuid4()
+
+    writer_repo = PostgresSessionRepository(db_session)
+    session = AgentSession(workspace_id=workspace_id, dag_generation_attempts=2)
+    await writer_repo.save(session)
+
+    # Fresh repo instance -- not the same Python object, and not reusing any cached
+    # domain entity -- to prove the count round-trips through the actual DB row.
+    reader_repo = PostgresSessionRepository(db_session)
+    refetched = await reader_repo.get_by_id(session.id)
+
+    assert refetched is not None
+    assert refetched.dag_generation_attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_postgres_user_repository_get_by_id_missing_returns_none(db_session):
     user_repo = PostgresUserRepository(db_session)
     assert await user_repo.get_by_id(uuid4()) is None

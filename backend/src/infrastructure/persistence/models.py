@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, Integer, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import declarative_base, relationship
@@ -39,5 +39,11 @@ class AgentSessionModel(Base):
     session_status = Column(String(50), default="INITIALIZING")
     dag_snapshot = Column(_JSONB, nullable=False, default=dict)
     provenance_log = Column(_JSONB, nullable=False, default=list)
+    # Number of DAG (re)generation attempts, mirroring
+    # `AgentSession.dag_generation_attempts` (domain/entities/agent_session.py).
+    # Must round-trip through get_by_id()/save() below -- without persisting this
+    # column, every fresh fetch of a session resets the actor-critic retry counter
+    # to 0, silently breaking the RF-002 bounded-retry guarantee across requests.
+    dag_generation_attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

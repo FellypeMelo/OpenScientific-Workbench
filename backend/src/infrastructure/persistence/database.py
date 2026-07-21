@@ -14,9 +14,12 @@ Design notes:
   point (the request's loop in a real deployment). This keeps the module safe to
   import anywhere (including at FastAPI app import time) without needing an
   `asyncio` context.
-- No Alembic migrations exist yet, so `init_models()` (a thin wrapper around
-  `Base.metadata.create_all`) is used to bootstrap tables for local dev/tests. A
-  real migration tool should replace this before production rollout with Postgres.
+- `init_models()` (a thin wrapper around `Base.metadata.create_all`) bootstraps
+  tables for local dev/tests only. Alembic (`backend/migrations/`) is the source of
+  truth for schema changes in any real deployment; `presentation/main.py`'s
+  `lifespan` only calls `init_models()` when `settings.ENV != "production"` --
+  production startup must run `alembic upgrade head` as a separate init step
+  instead (see `backend/README.md`).
 """
 from typing import AsyncGenerator, Optional
 

@@ -14,6 +14,11 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29.0",
+    # Schema migrations (see `backend/migrations/`). A production runtime dependency,
+    # not dev-only: real deployments run `alembic upgrade head` as a separate init
+    # step before the app boots (see `presentation/main.py`'s `lifespan` and
+    # `backend/README.md`), so the container image that runs that step needs it.
+    "alembic>=1.13.0",
     "redis>=5.0.4",
     "neo4j>=5.21.0",
     "qdrant-client>=1.9.1",

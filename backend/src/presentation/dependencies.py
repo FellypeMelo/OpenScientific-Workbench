@@ -11,13 +11,17 @@ presentation layer decoupled from the concrete persistence adapter in use.
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.domain.ports.node_executor import NodeExecutorPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.user_repository import UserRepositoryPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
+from src.infrastructure.config import settings
 from src.infrastructure.persistence.database import get_db_session
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
 from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
 from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorkspaceRepository
+from src.infrastructure.sandbox.bubblewrap_driver import BubblewrapSandboxDriver
+from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
 
 
 def get_current_user_id(request: Request) -> str:
@@ -68,3 +72,30 @@ def get_session_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SessionRepositoryPort:
     return PostgresSessionRepository(session)
+
+
+def get_sandbox_driver() -> BubblewrapSandboxDriver:
+    """Constructs the real sandbox isolation driver (RF-005/RNF-001/RNF-002).
+
+    Branches on `settings.SANDBOX_RUNTIME` ("bubblewrap" by default -- real
+    isolation; "subprocess"/"mock" for hosts that genuinely cannot run bwrap,
+    e.g. this project's Windows dev sandbox). Unlike every other real-vs-mock
+    adapter in this codebase, sandboxed code execution does NOT silently
+    degrade when misconfigured: constructing this with
+    `SANDBOX_RUNTIME=bubblewrap` on a host missing (or with a non-functional)
+    `bwrap` binary raises `SandboxUnavailableError` loudly instead --
+    sandboxing is a security boundary, not a nice-to-have (see
+    `infrastructure/sandbox/bubblewrap_driver.py`'s module docstring).
+
+    Callable both as a FastAPI `Depends(get_sandbox_driver)` and directly
+    (e.g. `get_node_executor(get_sandbox_driver())`) when a route needs to
+    resolve it conditionally/lazily instead of unconditionally on every
+    request -- see `presentation/routes/tasks.py`.
+    """
+    return BubblewrapSandboxDriver(runtime=settings.SANDBOX_RUNTIME)
+
+
+def get_node_executor(
+    driver: BubblewrapSandboxDriver = Depends(get_sandbox_driver),
+) -> NodeExecutorPort:
+    return SandboxNodeExecutor(driver)

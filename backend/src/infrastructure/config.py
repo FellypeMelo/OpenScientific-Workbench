@@ -100,6 +100,36 @@ class Settings(BaseSettings):
     # additionally self-disables off Linux, so enabling it is always safe.
     USE_BTRFS: bool = False
 
+    # --- Workspace file upload (RF-005 gap closure) ---
+    # Hard cap on a single `POST /workspaces/{id}/files` upload, enforced via
+    # bounded chunked reads (see `presentation/routes/workspaces.py`) so a
+    # malicious/oversized upload can't exhaust disk before being rejected.
+    MAX_UPLOAD_MB: int = 50
+
+    # --- Sandboxed code execution (RF-005/RNF-001/RNF-002 - bubblewrap) ---
+    # Which isolation backend `SandboxNodeExecutor` (see
+    # `infrastructure/sandbox/sandbox_node_executor.py`) runs DAG-node
+    # `language`/`command` pairs through:
+    #   - "bubblewrap" (default, REAL isolation): shells out to `bwrap` with a
+    #     locked-down profile (read-only system binds, isolated tmpfs
+    #     workspace, no network, resource limits). This is the only backend
+    #     that provides an actual security boundary.
+    #   - "subprocess": runs the command directly via `subprocess.run`, no
+    #     isolation at all. Fast for unit tests; NEVER use for untrusted code.
+    #   - "mock": no execution happens at all; a deterministic canned result is
+    #     returned. For hosts that genuinely cannot run bwrap (e.g. this
+    #     project's Windows dev sandbox).
+    #
+    # Deliberately NOT config-gated to a silent mock fallback like the other
+    # adapters in this codebase (Neo4j/Vault/Slurm/etc): sandboxed code
+    # execution is a security boundary, not a nice-to-have. If this stays
+    # "bubblewrap" (the real default) and the `bwrap` binary is missing or
+    # non-functional on this host, `BubblewrapSandboxDriver` raises
+    # `SandboxUnavailableError` LOUDLY at construction time instead of
+    # silently falling back to unsandboxed execution -- an operator must
+    # either install bubblewrap or explicitly opt into "subprocess"/"mock".
+    SANDBOX_RUNTIME: Literal["bubblewrap", "subprocess", "mock"] = "bubblewrap"
+
     # --- Auth (Fase 2 - JWT middleware) ---
     # No insecure default is supplied on purpose. Left `Optional`/`None` so importing
     # this module never crashes in dev/CI where no `.env` exists yet; the JWT

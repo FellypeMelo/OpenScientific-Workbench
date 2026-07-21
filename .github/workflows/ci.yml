@@ -28,6 +28,48 @@ jobs:
           cd backend
           pytest --cov=src --cov-report=term-missing --cov-fail-under=80
 
+  # RF-005/RNF-001/RNF-002: real sandboxed-execution smoke test against actual
+  # escape payloads. Separate from `backend-test` above (which does NOT
+  # install bubblewrap, so `BubblewrapSandboxDriver(runtime="bubblewrap")`
+  # would fail loud there by design -- see its module docstring) --
+  # `tests/integration/test_bubblewrap_sandbox_escape.py` self-skips
+  # everywhere `bwrap` isn't on PATH, so this job is the only place it
+  # actually executes.
+  #
+  # NOTE: written and reviewed carefully, but NOT executable/verifiable from
+  # the Windows dev sandbox this phase was implemented in -- a human must
+  # confirm this job goes green on a real `ubuntu-latest` GitHub Actions
+  # runner. In particular, some recent Ubuntu images restrict unprivileged
+  # user namespaces by default (AppArmor), which `bwrap` needs; the
+  # `sysctl` step below is a best-effort attempt to relax that if present,
+  # non-fatal if the knob doesn't exist on the runner's kernel.
+  sandbox-escape-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Relax unprivileged user namespace restriction (best-effort)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          cd backend
+          pip install -e . --group dev
+
+      - name: Run real bubblewrap sandbox-escape smoke test
+        run: |
+          cd backend
+          pytest tests/integration/test_bubblewrap_sandbox_escape.py -v
+
   frontend-test:
     runs-on: ubuntu-latest
     steps:

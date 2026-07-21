@@ -18,8 +18,14 @@ _SYSTEM_INSTRUCTION = (
     "You are a scientific research planner. Decompose the user's task into a "
     "directed acyclic graph of concrete sub-tasks. Respond with ONLY a JSON "
     'object of the form {"nodes": [{"id": "n1", "description": "...", '
-    '"dependencies": []}, ...]}. Every dependency must reference another node id. '
-    "Do not include any prose outside the JSON."
+    '"dependencies": [], "language": "python", "command": "..."}, ...]}. '
+    "Every dependency must reference another node id. `language` MUST be "
+    'exactly one of "python", "bash", or "r" -- the interpreter a sandbox '
+    "will run this node's `command` in. `command` MUST be the literal, "
+    "directly-executable code that carries out the sub-task: for \"python\", "
+    "the full source of a self-contained script (no external files assumed); "
+    "for \"bash\", a single shell command line; for \"r\", an R "
+    "expression/script. Do not include any prose outside the JSON."
 )
 
 
@@ -43,6 +49,8 @@ class LLMTaskPlanner:
                 id=str(nd["id"]),
                 description=str(nd.get("description", "")),
                 dependencies=[str(d) for d in nd.get("dependencies", [])],
+                language=str(nd.get("language", "bash")).strip().lower(),
+                command=str(nd.get("command", "")),
             )
             for nd in node_dicts
         ]

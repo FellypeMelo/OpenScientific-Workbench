@@ -21,11 +21,24 @@ traffic today the review step always approves on the first attempt. The
 exercised by tests (via an injected rejecting reviewer) -- it will start
 mattering the moment a second, independently-prompted critic call populates
 ``expected``, which is intentionally out of scope for this wiring phase.
+
+Node execution backend (RF-005): ``TaskRequest.execution_mode`` picks which
+``NodeExecutorPort`` simulates each ready DAG node --
+``"sandbox"`` (default) actually runs the LLM-planned ``language``/``command``
+for each node inside the real sandbox driver (``SandboxNodeExecutor`` +
+``BubblewrapSandboxDriver``, see ``infrastructure/sandbox/``) and rewards on
+its real exit code; ``"llm"`` instead asks the model to simulate/describe the
+step (the original RF-001 wiring, still available for callers that don't need
+real execution). The sandbox driver is resolved lazily, AFTER the request
+body is parsed and ONLY when ``execution_mode == "sandbox"`` -- not via an
+unconditional route-level ``Depends`` -- so an ``"llm"`` request never pays
+the cost of (or can be blocked by) sandbox availability, mirroring how the
+BYOK client below is resolved before the SSE stream opens.
 """
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Any, Dict
+from typing import AsyncGenerator, Any, Dict, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -35,14 +48,18 @@ from pydantic import BaseModel
 from src.application.use_cases.submit_task import SubmitTaskUseCase
 from src.domain.entities.dag import DAGNode, DAGSnapshot
 from src.domain.entities.review import ReviewVerdict
+from src.domain.ports.node_executor import NodeExecutorPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
 from src.domain.services.mcts_orchestrator import MCTSOrchestrator
 from src.infrastructure.llm.llm_node_executor import LLMNodeExecutor
 from src.infrastructure.llm.llm_task_planner import LLMTaskPlanner
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
+from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
 from src.presentation.dependencies import (
     get_current_user_id,
+    get_node_executor,
+    get_sandbox_driver,
     get_session_repository,
     get_workspace_repository,
 )
@@ -61,6 +78,8 @@ class TaskRequest(BaseModel):
     task: str
     # BYOK provider selector, same convention as `routes/chat.py`'s ChatRequest.
     provider: str = "deepseek"
+    # Which NodeExecutorPort simulates each DAG node -- see module docstring.
+    execution_mode: Literal["llm", "sandbox"] = "sandbox"
 
 
 def _sse(event: str, data: Dict[str, Any]) -> str:
@@ -96,6 +115,23 @@ async def submit_task_stream(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    # Resolve the node executor up front too, same rationale: a sandbox that
+    # can't actually provide isolation on this host becomes a clean 503 before
+    # the stream opens, never a raw 500 or (worse) a silent unsandboxed
+    # fallback. Resolved lazily/conditionally (a plain function call, not a
+    # route-level `Depends`) so an `"llm"`-mode request never even attempts to
+    # construct a sandbox driver.
+    executor: NodeExecutorPort
+    if request.execution_mode == "sandbox":
+        try:
+            executor = get_node_executor(get_sandbox_driver())
+        except SandboxUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+    else:
+        executor = LLMNodeExecutor(client)
+
     queue: "asyncio.Queue[object]" = asyncio.Queue()
 
     def _emit(event: str, **data: Any) -> None:
@@ -121,7 +157,7 @@ async def submit_task_stream(
 
     orchestrator = MCTSOrchestrator(
         planner=LLMTaskPlanner(client),
-        executor=LLMNodeExecutor(client),
+        executor=executor,
         on_plan=_on_plan,
         on_node_start=_on_node_start,
         on_node_update=_on_node_update,

@@ -6,12 +6,23 @@ Mirrors `test_presentation_routes.py`'s chat-route test style: the BYOK
 (the actual transport edge), session/workspace ownership goes through the real
 DB-backed repositories (via the autouse `_isolated_test_database` fixture in
 `conftest.py`), and nothing about domain business logic is faked.
+
+RF-005 gap-closure phase: the route's default `execution_mode` is now
+`"sandbox"` (real code execution -- see `presentation/routes/tasks.py`'s
+module docstring), not `"llm"`. The tests below that specifically exercise
+the LLM-node-executor / actor-critic event sequence pin
+`"execution_mode": "llm"` explicitly so they keep asserting that path
+regardless of the route's default; `test_submit_task_stream_sandbox_mode_*`
+and `test_submit_task_stream_sandbox_unavailable_returns_503` cover the new
+default path itself.
 """
 import json
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+import src.infrastructure.sandbox.bubblewrap_driver as bubblewrap_driver
+import src.presentation.dependencies as dependencies
 from src.presentation.main import app
 from src.presentation.middleware.jwt_auth import create_access_token
 
@@ -81,7 +92,10 @@ def test_submit_task_stream_emits_full_actor_critic_event_sequence(monkeypatch):
     session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/tasks",
-        json={"task": "Align these genes"},
+        # Pinned to "llm" -- this test specifically exercises the LLM node
+        # executor's actor-critic event sequence/output shape, independent of
+        # the route's "sandbox" default (RF-005; see module docstring).
+        json={"task": "Align these genes", "execution_mode": "llm"},
         headers=_AUTH_HEADERS,
     )
 
@@ -139,7 +153,7 @@ def test_submit_task_stream_persists_dag_generation_attempts_across_separate_cal
 
     first = client.post(
         f"/api/v1/sessions/{session_id}/tasks",
-        json={"task": "Align these genes"},
+        json={"task": "Align these genes", "execution_mode": "llm"},
         headers=_AUTH_HEADERS,
     )
     first_completed = [e for e in _parse_sse_events(first.text) if e["event"] == "completed"][0]
@@ -147,7 +161,7 @@ def test_submit_task_stream_persists_dag_generation_attempts_across_separate_cal
 
     second = client.post(
         f"/api/v1/sessions/{session_id}/tasks",
-        json={"task": "Align these genes again"},
+        json={"task": "Align these genes again", "execution_mode": "llm"},
         headers=_AUTH_HEADERS,
     )
     second_completed = [e for e in _parse_sse_events(second.text) if e["event"] == "completed"][0]
@@ -202,7 +216,7 @@ def test_submit_task_stream_planner_failure_yields_error_event(monkeypatch):
     session_id = _create_session()
     response = client.post(
         f"/api/v1/sessions/{session_id}/tasks",
-        json={"task": "Align these genes"},
+        json={"task": "Align these genes", "execution_mode": "llm"},
         headers=_AUTH_HEADERS,
     )
 
@@ -210,3 +224,79 @@ def test_submit_task_stream_planner_failure_yields_error_event(monkeypatch):
     events = _parse_sse_events(response.text)
     assert events[-1]["event"] == "error"
     assert "plan" in events[-1]["message"]
+
+
+_SANDBOX_PLAN_JSON = json.dumps(
+    {
+        "nodes": [
+            {
+                "id": "n1",
+                "description": "print a computed number",
+                "dependencies": [],
+                "language": "bash",
+                "command": "echo 42",
+            },
+        ]
+    }
+)
+
+
+def test_submit_task_stream_sandbox_mode_executes_real_commands(monkeypatch):
+    """Default `execution_mode` ("sandbox") actually runs the LLM-planned
+    `language`/`command` through `SandboxNodeExecutor` + `BubblewrapSandboxDriver`
+    instead of asking the model to describe the step -- forced to
+    `SANDBOX_RUNTIME=mock` (via the `settings` singleton `get_sandbox_driver`
+    reads) so this is deterministic and needs no real `bwrap` binary on the
+    test host, mirroring the "config-gated real-vs-mock adapter" pattern used
+    everywhere else in this codebase."""
+    monkeypatch.setattr(dependencies.settings, "SANDBOX_RUNTIME", "mock")
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(plan_json=_SANDBOX_PLAN_JSON),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Compute something", "execution_mode": "sandbox"},
+        headers=_AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+
+    node_updates = [e for e in events if e["event"] == "node_update"]
+    assert len(node_updates) == 1
+    assert node_updates[0]["node"]["status"] == "COMPLETED"
+    # Real sandbox execution output shape -- stdout + exit_code, NOT the LLM
+    # node executor's `{"text": ...}` shape.
+    assert node_updates[0]["node"]["output"] == {
+        "stdout": "Mock execution output: 42",
+        "exit_code": 0,
+    }
+
+    completed = events[-1]
+    assert completed["event"] == "completed"
+    assert completed["session_status"] == "SNAPSHOT_TAKEN"
+
+
+def test_submit_task_stream_sandbox_default_without_bwrap_returns_503(monkeypatch):
+    """Without an explicit `execution_mode` (defaults to "sandbox") and no
+    working `bwrap` on this host, the route must fail loud with a clean 503 --
+    never a raw 500, and never a silent unsandboxed fallback (sandboxing is a
+    security boundary, see `bubblewrap_driver.py`'s module docstring)."""
+    monkeypatch.setattr(bubblewrap_driver.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes"},
+        headers=_AUTH_HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert "bwrap" in response.json()["detail"]

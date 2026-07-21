@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.infrastructure.config import settings
 from src.infrastructure.persistence.database import engine, init_models
+from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
 from src.infrastructure.telemetry import setup_telemetry
 from src.presentation.middleware.jwt_auth import JWTAuthMiddleware
 from src.presentation.middleware.rate_limit import RateLimitMiddleware
@@ -183,6 +184,35 @@ async def value_error_handler(request: Request, exc: ValueError):
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"error_code": 4000, "message": error_msg}
+    )
+
+
+# Sandbox drivers (`GVisorSandboxDriver`, `BubblewrapSandboxDriver`) raise
+# `PermissionError` -- an `OSError` subclass, NOT a `ValueError` -- on a
+# path-traversal violation (see `infrastructure/sandbox/bubblewrap_driver.py`),
+# so it falls through the `ValueError` handler above and would otherwise
+# surface as a raw, unhandled 500. Map it the same way as the equivalent
+# `ValueError` branch: a clean 400 "Access Denied" response.
+@app.exception_handler(PermissionError)
+async def permission_error_handler(request: Request, exc: PermissionError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error_code": 4001, "message": "Access Denied: Path traversal detected."},
+    )
+
+
+# `BubblewrapSandboxDriver` fails LOUD (raises, never silently falls back --
+# see its module docstring / the repo-wide sandboxing ground rule) when the
+# real sandbox isolation it is configured to provide isn't actually available
+# on this host. Any call site that doesn't already convert this to a clean
+# HTTP response inline (`presentation/routes/tasks.py` does, for the one live
+# route today) is caught here as defense in depth, as 503 (capability
+# genuinely unavailable), not a raw 500.
+@app.exception_handler(SandboxUnavailableError)
+async def sandbox_unavailable_handler(request: Request, exc: SandboxUnavailableError):
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"error_code": 5031, "message": str(exc)},
     )
 
 # Mount Routes under /api/v1 prefix

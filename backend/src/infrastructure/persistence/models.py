@@ -47,3 +47,14 @@ class AgentSessionModel(Base):
     dag_generation_attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+class ArtifactModel(Base):
+    __tablename__ = "artifacts"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(PG_UUID(as_uuid=True), ForeignKey("agent_sessions.id", ondelete="CASCADE"))
+    name = Column(String(255), nullable=False)
+    # 64 lowercase hex chars (SHA-256), mirrors
+    # `ScientificArtifact.validate_sha256` (domain/entities/scientific_artifact.py).
+    sha256_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

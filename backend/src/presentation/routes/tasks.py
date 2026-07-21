@@ -48,6 +48,7 @@ from pydantic import BaseModel
 from src.application.use_cases.submit_task import SubmitTaskUseCase
 from src.domain.entities.dag import DAGNode, DAGSnapshot
 from src.domain.entities.review import ReviewVerdict
+from src.domain.ports.artifact_repository import ArtifactRepositoryPort
 from src.domain.ports.node_executor import NodeExecutorPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
@@ -57,6 +58,7 @@ from src.infrastructure.llm.llm_task_planner import LLMTaskPlanner
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
 from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
 from src.presentation.dependencies import (
+    get_artifact_repository,
     get_current_user_id,
     get_node_executor,
     get_sandbox_driver,
@@ -93,6 +95,7 @@ async def submit_task_stream(
     current_user_id: str = Depends(get_current_user_id),
     session_repo: SessionRepositoryPort = Depends(get_session_repository),
     workspace_repo: WorkspaceRepositoryPort = Depends(get_workspace_repository),
+    artifact_repo: ArtifactRepositoryPort = Depends(get_artifact_repository),
 ):
     # IDOR fix, same pattern as `routes/chat.py::chat_stream` /
     # `routes/sessions.py::get_session`: ownership is transitive through the
@@ -166,6 +169,7 @@ async def submit_task_stream(
         session_repo=session_repo,
         orchestrator=orchestrator,
         on_review=_on_review,
+        artifact_repo=artifact_repo,
     )
 
     async def _run() -> None:

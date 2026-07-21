@@ -2,7 +2,7 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
-from uuid import uuid4
+from uuid import UUID, uuid4
 from src.presentation.main import app
 from src.presentation.middleware.jwt_auth import create_access_token
 
@@ -166,3 +166,107 @@ def test_chat_streaming_endpoint_provider_failure_yields_error_event(monkeypatch
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
     assert events[-1]["event"] == "error"
+
+
+async def _fetch_session_row(db_url: str, session_id: str):
+    """Query the raw `AgentSessionModel` row through a fresh engine/session
+    bound to the isolated test SQLite file, mirroring
+    `tests/integration/test_routes_with_db.py`'s "verify via a brand new
+    engine against the same db_url" pattern -- proves the assertion reads back
+    what was actually persisted, not some in-process cached object."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.future import select
+    from src.infrastructure.persistence.models import AgentSessionModel
+
+    verify_engine = create_async_engine(db_url, future=True)
+    verify_sessionmaker = async_sessionmaker(
+        bind=verify_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with verify_sessionmaker() as db:
+        row = (
+            await db.execute(
+                select(AgentSessionModel).filter(AgentSessionModel.id == UUID(session_id))
+            )
+        ).scalars().first()
+    await verify_engine.dispose()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_endpoint_sanitizes_pii_and_appends_provenance(
+    monkeypatch, _isolated_test_database
+):
+    """RNF-005 (LGPD/GDPR): a successful chat turn must append a provenance_log
+    entry whose logged/persisted prompt has PII masked -- while the ORIGINAL,
+    unsanitized prompt is still what actually reaches the LLM (see
+    `routes/chat.py`'s reasoning comment for why sanitizing the LLM-bound copy
+    too would break legitimate requests)."""
+    captured_prompts = []
+
+    class _CapturingClient(_FakeStreamingClient):
+        async def generate_stream(self, prompt: str, system_instruction: str, temperature: float = 0.0):
+            captured_prompts.append(prompt)
+            async for delta in super().generate_stream(prompt, system_instruction, temperature):
+                yield delta
+
+    monkeypatch.setattr(
+        "src.presentation.routes.chat.ModelClientFactory.get_client",
+        lambda provider_name: _CapturingClient(["Hello"]),
+    )
+
+    session_id = _create_session()
+    raw_prompt = "Please contact me at researcher@osw.org about this run."
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/chat",
+        json={"prompt": raw_prompt},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    _parse_sse_events(response.text)  # drain the stream
+
+    # The real LLM call received the original, unsanitized prompt.
+    assert captured_prompts == [raw_prompt]
+
+    row = await _fetch_session_row(_isolated_test_database, session_id)
+    assert row is not None
+    entry = row.provenance_log[-1]
+    assert entry["action"] == "chat_message"
+    assert entry["provider"] == "deepseek"
+    assert entry["status"] == "success"
+    assert "researcher@osw.org" not in entry["prompt"]
+    assert "[EMAIL_MASKED]" in entry["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_endpoint_provider_failure_appends_error_provenance(
+    monkeypatch, _isolated_test_database
+):
+    class _BoomClient:
+        async def generate_response(self, prompt, system_instruction, temperature=0.0):
+            raise RuntimeError("boom")
+
+        async def generate_stream(self, prompt, system_instruction, temperature=0.0):
+            raise RuntimeError("boom")
+            yield ""  # pragma: no cover - unreachable, makes this an async generator
+
+    monkeypatch.setattr(
+        "src.presentation.routes.chat.ModelClientFactory.get_client",
+        lambda provider_name: _BoomClient(),
+    )
+
+    session_id = _create_session()
+    raw_prompt = "CPF 123.456.789-00 lookup"
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/chat",
+        json={"prompt": raw_prompt},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+
+    row = await _fetch_session_row(_isolated_test_database, session_id)
+    assert row is not None
+    entry = row.provenance_log[-1]
+    assert entry["action"] == "chat_message"
+    assert entry["status"] == "error"
+    assert "123.456.789-00" not in entry["prompt"]
+    assert "[CPF_MASKED]" in entry["prompt"]

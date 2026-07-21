@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.domain.ports.artifact_repository import ArtifactRepositoryPort
 from src.domain.ports.hpc_job_dispatcher import HPCJobDispatcherPort
 from src.domain.ports.mcp_router import MCPRouterPort
 from src.domain.ports.node_executor import NodeExecutorPort
@@ -28,6 +29,7 @@ from src.infrastructure.hpc.slurm_dispatcher import SlurmSSHDispatcher
 from src.infrastructure.mcp.bio_direct_adapters import register_direct_bio_tools
 from src.infrastructure.mcp.server_registry import MCPServerRegistry
 from src.infrastructure.persistence.database import get_db_session
+from src.infrastructure.persistence.postgres_artifact_repo import PostgresArtifactRepository
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
 from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
 from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorkspaceRepository
@@ -35,6 +37,7 @@ from src.infrastructure.sandbox.bubblewrap_driver import BubblewrapSandboxDriver
 from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
 from src.infrastructure.security.vault_client import VaultClient
 from src.infrastructure.skills.skill_registration import register_skills
+from src.infrastructure.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,12 @@ def get_session_repository(
     return PostgresSessionRepository(session)
 
 
+def get_artifact_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> ArtifactRepositoryPort:
+    return PostgresArtifactRepository(session)
+
+
 def get_sandbox_driver() -> BubblewrapSandboxDriver:
     """Constructs the real sandbox isolation driver (RF-005/RNF-001/RNF-002).
 
@@ -106,8 +115,15 @@ def get_sandbox_driver() -> BubblewrapSandboxDriver:
     (e.g. `get_node_executor(get_sandbox_driver())`) when a route needs to
     resolve it conditionally/lazily instead of unconditionally on every
     request -- see `presentation/routes/tasks.py`.
+
+    `tracer=get_tracer()` (RNF-004) wires this driver's real construction site
+    to the globally-configured OpenTelemetry provider `setup_telemetry()` boots
+    in `presentation/main.py`, so every `execute_*` call opens a real
+    `sandbox.execute` span (see `BubblewrapSandboxDriver.__init__`'s `tracer`
+    param and its usage in `execute_bash`/etc.) instead of the constructor's
+    `tracer=None` default silently emitting no spans at all.
     """
-    return BubblewrapSandboxDriver(runtime=settings.SANDBOX_RUNTIME)
+    return BubblewrapSandboxDriver(runtime=settings.SANDBOX_RUNTIME, tracer=get_tracer())
 
 
 def get_node_executor(

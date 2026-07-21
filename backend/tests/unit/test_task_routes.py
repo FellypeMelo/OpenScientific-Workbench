@@ -17,8 +17,9 @@ and `test_submit_task_stream_sandbox_unavailable_returns_503` cover the new
 default path itself.
 """
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 import src.infrastructure.sandbox.bubblewrap_driver as bubblewrap_driver
@@ -135,6 +136,50 @@ def test_submit_task_stream_emits_full_actor_critic_event_sequence(monkeypatch):
     assert completed["session_status"] == "SNAPSHOT_TAKEN"
     assert completed["dag_generation_attempts"] == 1
     assert "nodes" in completed["dag_snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_submit_task_stream_persists_scientific_artifact_on_approval(
+    monkeypatch, _isolated_test_database
+):
+    """RNF-006 gap closure, exercised end-to-end through the real route (not
+    just the use case in isolation, see `tests/unit/test_submit_task.py`):
+    an approved task run must leave a real `ArtifactModel` row behind, hashed
+    against this backend's own `uv.lock`."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.future import select
+
+    from src.domain.services.reproducibility import compute_lockfile_hash, default_lockfile_path
+    from src.infrastructure.persistence.models import ArtifactModel
+
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes", "execution_mode": "llm"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+
+    verify_engine = create_async_engine(_isolated_test_database, future=True)
+    verify_sessionmaker = async_sessionmaker(bind=verify_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_sessionmaker() as db:
+        row = (
+            await db.execute(
+                select(ArtifactModel).filter(ArtifactModel.session_id == UUID(session_id))
+            )
+        ).scalars().first()
+    await verify_engine.dispose()
+
+    assert row is not None
+    # The plan's last node is "n2" (see `_PLAN_JSON`), and both are COMPLETED
+    # by the LLM node executor -- see `_derive_artifact_name`.
+    assert row.name == "n2_output.json"
+    assert row.sha256_hash == compute_lockfile_hash(default_lockfile_path())
 
 
 def test_submit_task_stream_persists_dag_generation_attempts_across_separate_calls(monkeypatch):

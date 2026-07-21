@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime
 from typing import AsyncGenerator
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
+from src.domain.services.pii_sanitizer import PIISanitizer
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
 from src.presentation.dependencies import (
     get_current_user_id,
@@ -86,6 +88,26 @@ async def chat_stream(
     if not workspace or str(workspace.owner_id) != current_user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
+    # RNF-005 (LGPD/GDPR): sanitize the incoming prompt once, up front, before
+    # it is ever logged or written to `session.provenance_log` below.
+    #
+    # Deliberately NOT used for the actual `client.generate_stream(prompt=...)`
+    # call further down -- this mirrors the existing precedent in
+    # `application/use_cases/submit_task.py::execute`, which sanitizes only the
+    # provenance-log copy of the task text (`safe_task`) while still driving
+    # the orchestrator with the original, unsanitized `task_nl`. The reasoning
+    # carries over identically here: masking PII out of the prompt before it
+    # reaches the model would silently corrupt any legitimate request that
+    # actually needs that PII to do its job (e.g. "summarize findings for
+    # patient CPF 123.456.789-00" -- a masked "[CPF_MASKED]" is meaningless to
+    # the model and produces a wrong/unhelpful answer). The BYOK provider is a
+    # third party the researcher explicitly chose for this call (same trust
+    # boundary as every other BYOK request in this codebase); this route's own
+    # logs and `provenance_log` column are the boundary this project controls
+    # and must not retain PII, which is exactly what sanitizing only that copy
+    # achieves.
+    safe_prompt = PIISanitizer().sanitize(request.prompt)
+
     # Resolve the BYOK client *before* opening the SSE stream: a missing API
     # key (`ModelClientFactory.get_client` raises `ValueError`) or an unknown
     # provider name becomes a clean HTTP 400 up front, instead of a stream
@@ -118,8 +140,25 @@ async def chat_stream(
                 session_id,
                 request.provider,
             )
+            session.provenance_log.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "action": "chat_message",
+                "provider": request.provider,
+                "prompt": safe_prompt,
+                "status": "error",
+            })
+            await session_repo.save(session)
             yield _sse("error", "The model provider stream failed. Please try again.")
             return
+
+        session.provenance_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "action": "chat_message",
+            "provider": request.provider,
+            "prompt": safe_prompt,
+            "status": "success",
+        })
+        await session_repo.save(session)
 
         yield _sse("completed", accumulated or "The model returned an empty response.")
 

@@ -3,12 +3,33 @@ from uuid import UUID
 from datetime import datetime
 
 from src.domain.entities.agent_session import AgentSession
+from src.domain.entities.dag import DAGSnapshot
 from src.domain.entities.review import ReviewVerdict
+from src.domain.entities.scientific_artifact import ScientificArtifact
+from src.domain.ports.artifact_repository import ArtifactRepositoryPort
 from src.domain.ports.reviewer import ReviewerPort
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.services.mcts_orchestrator import MCTSOrchestrator
 from src.domain.services.numeric_reviewer import NumericReviewer
 from src.domain.services.pii_sanitizer import PIISanitizer
+from src.domain.services.reproducibility import default_lockfile_path
+
+
+def _derive_artifact_name(snapshot: DAGSnapshot) -> str:
+    """Derive a human-meaningful artifact name from the approved DAG run's
+    produced output (RNF-006), instead of accepting an arbitrary caller string.
+
+    Uses the last COMPLETED node (the tail of the approved run, both executors
+    -- `LLMNodeExecutor` and `SandboxNodeExecutor` -- populate `node.output` on
+    every node they simulate, see their module docstrings) to name the
+    artifact after the concrete step that produced it. Falls back to a
+    snapshot-level name on the degenerate case of an approved run with no
+    completed node (an empty DAG), so this never raises.
+    """
+    completed = [node for node in snapshot.nodes if node.status == "COMPLETED"]
+    if completed:
+        return f"{completed[-1].id}_output.json"
+    return "dag_snapshot.json"
 
 
 class SubmitTaskUseCase:
@@ -26,6 +47,17 @@ class SubmitTaskUseCase:
     ``(verdict, attempt, max_review_attempts)`` -- a live caller (e.g. an SSE
     route) can use ``attempt == max_review_attempts and not verdict.approved`` to
     tell a final rejection apart from a rejection that will still be retried.
+
+    ``artifact_repo`` is an optional ``ArtifactRepositoryPort`` (defaults to
+    ``None``). Unlike ``session_repo``/``orchestrator`` (required -- there is
+    no meaningful way to run this use case without them), ``ArtifactRepositoryPort``
+    needs a live DB session to construct (see
+    ``presentation/dependencies.py``'s ``get_artifact_repository``), so it
+    follows the same "optional, no-op when absent" shape as ``on_review``
+    rather than being forced on every caller/test. When provided, an approved
+    run's produced output is stamped into a `ScientificArtifact`
+    (RNF-006, see `_derive_artifact_name`/`domain/services/reproducibility.py`)
+    and persisted right after the DAG snapshot itself is saved.
     """
 
     def __init__(
@@ -37,6 +69,7 @@ class SubmitTaskUseCase:
         reviewer: ReviewerPort = None,
         max_review_attempts: int = 3,
         on_review: Optional[Callable[[ReviewVerdict, int, int], None]] = None,
+        artifact_repo: Optional[ArtifactRepositoryPort] = None,
     ):
         self.session_repo = session_repo
         self.orchestrator = orchestrator
@@ -45,6 +78,7 @@ class SubmitTaskUseCase:
         self.reviewer = reviewer or NumericReviewer()
         self.max_review_attempts = max_review_attempts
         self.on_review = on_review
+        self.artifact_repo = artifact_repo
 
     async def execute(self, session_id: UUID, task_nl: str) -> AgentSession:
         session = await self.session_repo.get_by_id(session_id)
@@ -82,6 +116,19 @@ class SubmitTaskUseCase:
                     "status": "success",
                 })
                 await self.session_repo.save(session)
+
+                # RNF-006: stamp the approved run's produced output as a
+                # ScientificArtifact, hashed against this backend's own
+                # dependency lockfile (never a caller-supplied hash/path) --
+                # right after the DAG snapshot itself has been persisted.
+                if self.artifact_repo is not None:
+                    artifact = ScientificArtifact.from_generated_output(
+                        session_id=session.id,
+                        name=_derive_artifact_name(snapshot),
+                        lockfile_path=default_lockfile_path(),
+                    )
+                    await self.artifact_repo.save(artifact)
+
                 return session
 
             # Rejected: record, persist this checkpoint, then loop back (RF-003).

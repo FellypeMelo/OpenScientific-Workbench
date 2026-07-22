@@ -16,11 +16,14 @@ The driver is duck-typed (any object exposing ``execute_python_script``/
 ``GVisorSandboxDriver`` (dormant alternative), see
 ``infrastructure/sandbox/bubblewrap_driver.py``.
 """
+import json
 import logging
 import os
 import re
+from typing import Optional
 
 from src.domain.entities.dag import DAGNode
+from src.domain.ports.mcp_router import MCPRouterPort
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,11 @@ logger = logging.getLogger(__name__)
 # but must never be trusted as a raw filesystem path segment either.
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
-_SUPPORTED_LANGUAGES = ("python", "bash", "r")
+# "tool" is not another script-interpreter language -- it is a typed call
+# into the registered MCP tool catalog (`domain/ports/mcp_router.py`) instead
+# of LLM-generated code. See `simulate()`'s `language == "tool"` branch and
+# `LLMTaskPlanner`'s `tool_names` constructor arg.
+_SUPPORTED_LANGUAGES = ("python", "bash", "r", "tool")
 
 
 class SandboxNodeExecutor:
@@ -45,8 +52,14 @@ class SandboxNodeExecutor:
     so a caller/UI can inspect what actually ran.
     """
 
-    def __init__(self, driver):
+    def __init__(self, driver, mcp_router: Optional[MCPRouterPort] = None):
         self.driver = driver
+        # Optional: only needed for `language == "tool"` nodes. Left `None`
+        # by default so every existing caller/test that constructs this
+        # class with just a driver keeps working unchanged; a `"tool"` node
+        # reaching `simulate()` with no router configured is pruned with a
+        # clear error rather than raising `AttributeError`.
+        self.mcp_router = mcp_router
 
     async def simulate(self, node: DAGNode) -> float:
         language = (node.language or "").strip().lower()
@@ -63,6 +76,9 @@ class SandboxNodeExecutor:
             )
             node.output = {"error": f"Unsupported language: {node.language!r}"}
             return -1.0
+
+        if language == "tool":
+            return await self._simulate_tool_call(node, command)
 
         try:
             if language == "python":
@@ -84,6 +100,49 @@ class SandboxNodeExecutor:
 
         node.output = {"stdout": stdout, "exit_code": exit_code}
         return 1.0 if exit_code == 0 else -1.0
+
+    async def _simulate_tool_call(self, node: DAGNode, command: str) -> float:
+        """Handles a ``language == "tool"`` node: ``command`` is JSON
+        ``{"tool_name": str, "arguments": dict}`` (the shape `LLMTaskPlanner`
+        is instructed to emit when it picks a registered tool instead of
+        generating code), routed through `MCPRouterPort.route()` -- the SAME
+        registry `POST /api/v1/mcp/tools/call` uses, see
+        `infrastructure/mcp/server_registry.py`. This is what lets the DAG
+        orchestrator actually reach the bio/DB adapters and sandboxed action
+        tools instead of only ever generating a script from scratch."""
+        if self.mcp_router is None:
+            logger.warning(
+                "Node %s is a 'tool' node but no mcp_router was configured; pruning.",
+                node.id,
+            )
+            node.output = {"error": "No MCP router configured for tool-call execution."}
+            return -1.0
+
+        try:
+            payload = json.loads(command)
+            tool_name = str(payload["tool_name"])
+            arguments = payload.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                raise TypeError("'arguments' must be a JSON object")
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning("Node %s has a malformed tool-call command: %s", node.id, exc)
+            node.output = {
+                "error": (
+                    "Malformed tool-call command; expected JSON "
+                    f'{{"tool_name": ..., "arguments": {{...}}}}}}: {exc}'
+                )
+            }
+            return -1.0
+
+        try:
+            result = await self.mcp_router.route(tool_name, arguments)
+        except Exception as exc:  # noqa: BLE001 -- a failing tool call is a normal <0 reward outcome
+            logger.exception("Tool call '%s' failed for node %s", tool_name, node.id)
+            node.output = {"error": str(exc)}
+            return -1.0
+
+        node.output = {"tool_name": tool_name, "result": result}
+        return 1.0
 
     def _materialize_python_script(self, node: DAGNode, source: str) -> str:
         """Writes ``node.command``'s Python source to a real file inside the

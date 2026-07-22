@@ -14,6 +14,16 @@ package layout under `src/` (`domain/`, `application/`, `infrastructure/`,
 Local development: see `.env.example` for configuration and
 `docs/planning/execution_plan_gap_closure.md` for the phased delivery history.
 
+## Scientific tool catalog / sandbox toolkit
+
+`backend/Dockerfile`'s `sandbox-toolkit` build stage installs a dedicated conda/micromamba
+environment (`backend/sandbox/environment.yml` + `requirements-pip.txt` -- biopython, RDKit,
+samtools, R/Bioconductor, ~150 packages total) that sandboxed action tools run against inside the
+`bwrap` jail (`src/infrastructure/sandbox/bubblewrap_driver.py`), kept separate from this app's own
+`/opt/venv` on purpose. See **[`docs/tools/README.md`](docs/tools/README.md)** for the full 172-tool
+catalog, and `data_lake/MANIFEST.md` (repo root) + `scripts/fetch_data_lake.py` for the bundled
+reference datasets some tools read.
+
 ## Database schema migrations (Alembic)
 
 Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/) under

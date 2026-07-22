@@ -200,6 +200,45 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
+    # --- Taxonomy DB adapters (Fase 2 gap closure - taxonomy_db_adapters.py) ---
+    # The IUCN Red List API v4 (https://api.iucnredlist.org) requires a Bearer
+    # token on every request -- unlike the other three
+    # `taxonomy_db_adapters.py` endpoints (Paleobiology DB, WoRMS, Mouse
+    # Phenome DB), which are fully public/unauthenticated. No insecure
+    # default is supplied; obtain a token at
+    # https://api.iucnredlist.org/users/sign_up (or the token-request flow
+    # linked from the API docs) and set it via env/`.env`.
+    # `TaxonomyDBAdapters.query_iucn` raises a clear `ValueError` at the
+    # point of use if this resolves to `None`, mirroring the
+    # `DEEPSEEK_API_KEY` convention in
+    # `infrastructure/llm/model_client_factory.py`.
+    IUCN_API_TOKEN: Optional[str] = None
+
+    # --- NCBI Entrez eutils (DB adapter tools - expression_browser gap closure) ---
+    # Consumed by `infrastructure/mcp/expression_browser_db_adapters.py`'s
+    # `query_geo` tool (NCBI GEO DataSets search via esearch/esummary).
+    # Both are optional: NCBI's eutils work unauthenticated, but a contact
+    # email is their documented courtesy requirement for any automated/bulk
+    # use, and an API key raises the per-IP rate limit from 3 to 10
+    # requests/second. Neither is hardcoded -- `None` means "send the
+    # request without them", exactly like the LLM provider keys above.
+    NCBI_EMAIL: Optional[str] = None
+    NCBI_API_KEY: Optional[str] = None
+
+    # --- Literature/search DB adapters (Fase 2 gap closure - literature_adapters.py) ---
+    # All four optional: each tool degrades to an unauthenticated request (or,
+    # for `search_google`, raises a clear `LiteratureAPIError` -- the Google
+    # Custom Search API has no unauthenticated mode) when unset, mirroring
+    # every other credential field in this class. `NCBI_EMAIL`/`NCBI_API_KEY`
+    # above are intentionally REUSED here (not duplicated as
+    # `NCBI_ENTREZ_EMAIL`/`NCBI_ENTREZ_API_KEY`) -- `query_pubmed` and
+    # `expression_browser_db_adapters.py`'s `query_geo` both call the same
+    # NCBI Entrez eutils service, so one contact-email/key pair covers both.
+    CROSSREF_MAILTO: Optional[str] = None
+    SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
+    GOOGLE_SEARCH_API_KEY: Optional[str] = None
+    GOOGLE_SEARCH_ENGINE_ID: Optional[str] = None
+
     # --- MCP tool routing / Skills (RF-004/RF-009 gap closure) ---
     # Filesystem root `infrastructure/skills/skill_registration.py::register_skills`
     # walks for `*/SKILL.md` directories to compile and register as routable MCP
@@ -212,6 +251,28 @@ class Settings(BaseSettings):
     # additionally wraps it in try/except as defense in depth. Override via the
     # `SKILLS_ROOT` env var once real scientific Skill content is authored.
     SKILLS_ROOT: str = str(_REPO_ROOT / "skills")
+
+    # --- Data lake (Biomni-E1-style bundled reference datasets) ---
+    # Where THIS CONTAINER (not the host) sees the data lake -- must match
+    # `docker-compose.yml`'s `./data_lake:/datalake:ro` bind mount target on
+    # the `backend`/`worker` services. Deliberately a fixed absolute
+    # container path rather than `_REPO_ROOT`-derived (unlike `SKILLS_ROOT`
+    # above): `_REPO_ROOT` resolves to `/` inside this image (see that
+    # constant's definition), which would silently produce `/data_lake`
+    # (underscore) here -- a one-character mismatch against the `/datalake`
+    # bind target that would make `BubblewrapSandboxDriver` never find it.
+    # `BubblewrapSandboxDriver` binds this read-only into the bwrap jail
+    # (also at `/datalake`) for action tools that read a bundled reference
+    # table (gene sets, PPI networks, GWAS catalog, ...). See
+    # `backend/data_lake/MANIFEST.md` for the full list and
+    # `backend/scripts/fetch_data_lake.py` for how to populate it -- the
+    # actual dataset files are NOT bundled in the image (several are
+    # multi-GB and/or gated behind a registration/license click-through),
+    # only this directory convention + the fetch script are shipped. A tool
+    # whose required file is missing here must fail loud with a message
+    # pointing at `fetch_data_lake.py`, never silently treat an absent
+    # dataset as an empty-but-valid result.
+    DATA_LAKE_ROOT: str = "/datalake"
 
     # --- CORS (Fase 5 - frontend gap closure) ---
     # The Next.js frontend (`frontend/`) runs on its own origin (`next dev`

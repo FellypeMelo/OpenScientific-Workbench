@@ -92,3 +92,11 @@ tmp/
 temp/
 logs/
 *.log
+
+# Data lake (see backend/docs/tools/data_lake_source_list.md +
+# data_lake/MANIFEST.md) -- downloaded by scripts/fetch_data_lake.py, never
+# committed (some entries are multi-GB and/or license-gated). Keep the
+# manifest/gitkeep tracked so the directory + docs survive `git clone`.
+/data_lake/*
+!/data_lake/.gitkeep
+!/data_lake/MANIFEST.md

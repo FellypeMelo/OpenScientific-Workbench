@@ -1,0 +1,167 @@
+# Conda/micromamba environment for the SANDBOXED code-execution runtime
+# (`SandboxNodeExecutor` -> `BubblewrapSandboxDriver`, see
+# `backend/src/infrastructure/sandbox/bubblewrap_driver.py`).
+#
+# This is a SEPARATE environment from the app's own `/opt/venv` (built by
+# `backend/Dockerfile`'s "builder" stage from `pyproject.toml`). That venv
+# runs FastAPI/SQLAlchemy/etc -- trusted app code. This env is what
+# LLM-generated, sandboxed research scripts (`python3`/`Rscript`/CLI tools
+# invoked via `bash`) actually see on PATH *inside* the bwrap jail. Keeping
+# them separate means an untrusted script can never import the app's own
+# dependencies (DB credentials helpers, JWT signing code, etc.) even by
+# accident -- only what's listed below.
+#
+# Modeled on the Biomni-E1 action space (biopython/scanpy/samtools/plink/...,
+# see the project's `docs/` for the paper this is based on): one shared
+# Python+R+CLI environment covering genomics, single-cell, cheminformatics,
+# structural biology, and general data science.
+#
+# IMPORTANT: this manifest was hand-curated from known conda-forge/bioconda
+# package names -- it has NOT been solved/built in this session (no Linux
+# host with conda/micromamba available in this dev environment). Some CLI
+# package names (esp. `adfr-suite`, `gcta`, `iqtree`, `homer`) are the most
+# likely bioconda recipe names but are not independently verified here.
+# Treat the FIRST `docker compose build backend` after this change as the
+# real verification step; if the solver rejects a package name, check
+# https://bioconda.github.io/recipes.html (or `conda search -c bioconda
+# <name>`) for the corrected name and fix it here.
+name: sandbox
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+
+  # --- R + Bioconductor -------------------------------------------------
+  - r-base=4.3
+  - r-ggplot2
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - r-stringr
+  - r-matrix
+  - r-wgcna
+  - r-harmony
+  - bioconductor-deseq2
+  - bioconductor-clusterprofiler
+  - bioconductor-edger
+  - bioconductor-limma
+
+  # --- Sequence alignment / mapping / variant calling -------------------
+  - samtools
+  # `bcftools` -- variant calling/filtering for
+  # `analyze_comparative_genomics_and_haplotypes` (bwa+samtools+bcftools
+  # pipeline) and `detect_and_characterize_structural_variations` (filters
+  # LUMPY's raw SV VCF), see action_tool_catalog.md's single-cell/omics
+  # category. Same bioconda channel/release train as `samtools` above.
+  - bcftools
+  - bowtie2
+  - bwa
+  - bedtools
+  - blast
+  - diamond
+  - trimmomatic
+  - mafft
+  - muscle
+  # `analyze_protein_phylogeny`'s `alignment_method` default is "clustalw"
+  # (action_tool_catalog.md, genomics_popgen category) -- bundled alongside
+  # mafft/muscle so that default actually resolves to a real CLI tool.
+  - clustalw
+  - fasttree
+  - iqtree
+  - homer
+  - macs2
+  - cyvcf2
+  - pysam
+  - pyfaidx
+  - pyranges
+  - pybedtools
+  - pybigwig
+  # GATK4 + SnpEff -- `detect_and_annotate_somatic_mutations` (Mutect2 +
+  # FilterMutectCalls + functional annotation), see action_tool_catalog.md.
+  - gatk4
+  - snpeff
+  # LUMPY -- `detect_and_characterize_structural_variations`.
+  - lumpy-sv
+
+  # --- Population / quantitative genetics --------------------------------
+  - plink
+  - plink2
+  - gcta
+
+  # --- Molecular docking / cheminformatics / structural biology ---------
+  - rdkit
+  - openbabel
+  - vina
+  - adfr-suite
+  - openmm
+
+  # --- Single-cell / omics -------------------------------------------------
+  - biopython
+  - scanpy
+  - scikit-bio
+  - anndata
+  - mudata
+  - python-igraph
+  - pyscenic
+  - arboreto
+  - cooler
+  - fanc
+  - loompy
+  - cellpose
+  - viennarna
+  - mageck
+  - biom-format
+  - plannotate
+  - fcsparser
+
+  # --- General scientific Python -----------------------------------------
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - statsmodels
+  - umap-learn
+  - faiss-cpu
+  - tiledb
+  - tiledbsoma
+  - h5py
+  - opencv
+  - scikit-image
+  # TIFF stack I/O for `cell_imaging.py`'s time-lapse/calcium-imaging tools
+  # (`analyze_cell_migration_metrics`, `analyze_calcium_imaging_data`,
+  # `quantify_and_cluster_cell_motility`, `analyze_myofiber_morphology`,
+  # `analyze_mitochondrial_morphology_and_potential`, etc.) -- scikit-image's
+  # own TIFF plugin depends on it too, but it was not previously declared
+  # explicitly here.
+  - tifffile
+  - hmmlearn
+  - msprime
+  - tskit
+  - trackpy
+  - cobra
+  - python-libsbml
+  - optlang
+  # `networkx` -- `analyze_ddr_network_in_cancer` builds a real gene-gene
+  # correlation network over DNA-damage-response genes and computes
+  # degree/betweenness centrality on it (single-cell/omics category).
+  - networkx
+
+  # --- Medical / cardiovascular imaging -----------------------------------
+  # `reconstruct_3d_face_from_mri`, `calculate_brain_adc_map`,
+  # `analyze_aortic_diameter_and_geometry` need NIfTI/DICOM I/O.
+  - nibabel
+  - pydicom
+
+  # --- Single-cell embeddings (heavy, CPU-only torch) ---------------------
+  # `create_scvi_embeddings_scRNA`, `create_harmony_embeddings_scRNA`.
+  - pytorch-cpu
+  - scvi-tools
+  - harmonypy
+
+  # --- Anything left is installed via pip into this same env, see
+  #     requirements-pip.txt (packages not reliably on conda-forge/bioconda,
+  #     or that are pure-Python with no native-build risk).

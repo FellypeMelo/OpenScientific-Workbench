@@ -353,3 +353,71 @@ def test_preexec_fn_none_when_resource_module_unavailable(monkeypatch):
     monkeypatch.setattr(bw, "resource", None)
     driver = BubblewrapSandboxDriver(runtime="mock")
     assert driver._preexec_fn() is None
+
+
+# --- sandbox toolkit / data lake binds (Fase 1/3 wiring) -------------------
+
+
+def test_sandbox_toolkit_bound_and_put_first_on_path_when_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(bw.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(bw.subprocess, "run", lambda argv, **kwargs: types.SimpleNamespace(returncode=0, stderr=b""))
+    monkeypatch.setattr(bw.os.path, "isdir", lambda p: p == bw.SANDBOX_TOOLKIT_DIR or p == str(tmp_path))
+
+    driver = BubblewrapSandboxDriver(runtime="bubblewrap", workspace_root=str(tmp_path))
+    argv = driver._bwrap_argv()
+
+    assert "--ro-bind" in argv
+    idx = argv.index(bw.SANDBOX_TOOLKIT_DIR)
+    assert argv[idx - 1] == "--ro-bind"
+    assert argv[idx + 1] == bw.SANDBOX_TOOLKIT_DIR
+    path_idx = argv.index("--setenv")
+    assert argv[path_idx + 1] == "PATH"
+    assert argv[path_idx + 2].startswith(f"{bw.SANDBOX_TOOLKIT_DIR}/bin:")
+
+
+def test_sandbox_toolkit_absent_falls_back_to_system_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(bw.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(bw.subprocess, "run", lambda argv, **kwargs: types.SimpleNamespace(returncode=0, stderr=b""))
+    monkeypatch.setattr(bw.os.path, "isdir", lambda p: p == str(tmp_path))
+
+    driver = BubblewrapSandboxDriver(runtime="bubblewrap", workspace_root=str(tmp_path))
+    argv = driver._bwrap_argv()
+
+    assert bw.SANDBOX_TOOLKIT_DIR not in argv
+    path_idx = argv.index("--setenv")
+    assert argv[path_idx + 2] == "/usr/bin:/bin"
+
+
+def test_data_lake_bound_read_only_when_configured_and_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(bw.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(bw.subprocess, "run", lambda argv, **kwargs: types.SimpleNamespace(returncode=0, stderr=b""))
+    data_lake = str(tmp_path / "datalake")
+    monkeypatch.setattr(bw.os.path, "isdir", lambda p: p in (str(tmp_path), data_lake))
+
+    driver = BubblewrapSandboxDriver(
+        runtime="bubblewrap", workspace_root=str(tmp_path), data_lake_root=data_lake,
+    )
+    argv = driver._bwrap_argv()
+
+    idx = argv.index(data_lake)
+    assert argv[idx - 1] == "--ro-bind"
+    assert argv[idx + 1] == "/datalake"
+
+
+def test_data_lake_not_bound_when_directory_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(bw.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(bw.subprocess, "run", lambda argv, **kwargs: types.SimpleNamespace(returncode=0, stderr=b""))
+    monkeypatch.setattr(bw.os.path, "isdir", lambda p: p == str(tmp_path))
+
+    driver = BubblewrapSandboxDriver(
+        runtime="bubblewrap", workspace_root=str(tmp_path), data_lake_root="/nonexistent-datalake",
+    )
+    argv = driver._bwrap_argv()
+
+    assert "/datalake" not in argv
+
+
+def test_data_lake_root_defaults_from_settings(monkeypatch):
+    monkeypatch.setattr(bw.settings, "DATA_LAKE_ROOT", "/configured-datalake")
+    driver = BubblewrapSandboxDriver(runtime="mock")
+    assert driver.data_lake_root == "/configured-datalake"

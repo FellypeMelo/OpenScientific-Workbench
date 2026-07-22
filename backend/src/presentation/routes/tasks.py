@@ -60,6 +60,7 @@ from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
 from src.presentation.dependencies import (
     get_artifact_repository,
     get_current_user_id,
+    get_mcp_registry,
     get_node_executor,
     get_sandbox_driver,
     get_session_repository,
@@ -124,10 +125,23 @@ async def submit_task_stream(
     # fallback. Resolved lazily/conditionally (a plain function call, not a
     # route-level `Depends`) so an `"llm"`-mode request never even attempts to
     # construct a sandbox driver.
+    # The MCP tool registry (bio/DB adapters + sandboxed action tools) is
+    # resolved regardless of execution_mode, so `LLMTaskPlanner` can list real
+    # tool names in the planning prompt either way. Only `SandboxNodeExecutor`
+    # actually acts on a `"tool"`-language node (routes it through
+    # `MCPRouterPort.route()`, see `_simulate_tool_call`); `LLMNodeExecutor`
+    # ignores `node.language`/`node.command` entirely regardless of value (it
+    # always just re-prompts the model with `node.description`), so a
+    # `"tool"` node under `execution_mode="llm"` still gets a response, just
+    # never a real tool call -- a pre-existing limitation of that executor,
+    # not new here.
+    mcp_registry = get_mcp_registry()
+    tool_names = list(getattr(mcp_registry, "registry", {}).keys())
+
     executor: NodeExecutorPort
     if request.execution_mode == "sandbox":
         try:
-            executor = get_node_executor(get_sandbox_driver())
+            executor = get_node_executor(get_sandbox_driver(), mcp_registry)
         except SandboxUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -159,7 +173,7 @@ async def submit_task_stream(
         )
 
     orchestrator = MCTSOrchestrator(
-        planner=LLMTaskPlanner(client),
+        planner=LLMTaskPlanner(client, tool_names=tool_names),
         executor=executor,
         on_plan=_on_plan,
         on_node_start=_on_node_start,

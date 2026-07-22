@@ -18,6 +18,7 @@ Design notes:
   longer mistake an unrouted tool call for one that actually ran somewhere.
 """
 import inspect
+import json
 from typing import Any, Callable, Dict
 
 from src.domain.ports.mcp_router import MCPRouterPort
@@ -54,4 +55,12 @@ class MCPServerRegistry(MCPRouterPort):
         result = handler(arguments)
         if inspect.isawaitable(result):
             result = await result
+        # Structured results (every action-tool handler returns a dict; some
+        # DB adapters return a list) go out as real JSON, not Python's
+        # single-quoted `repr()` -- `str({"a": 1})` is not valid JSON and is
+        # unparseable by any consumer (including an LLM asked to read a tool
+        # result back). Anything else (a plain string/number a simple
+        # handler returns directly) keeps the old plain `str()` coercion.
+        if isinstance(result, (dict, list)):
+            return json.dumps(result)
         return str(result)

@@ -156,6 +156,14 @@ services:
     environment: *backend-env
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Data lake (see `backend/data_lake/MANIFEST.md`) -- bound read-only,
+      # then bound read-only AGAIN into the bwrap jail at `/datalake` by
+      # `BubblewrapSandboxDriver` (double-read-only, defense in depth: even a
+      # container-escape from the sandbox can't write here). Empty by
+      # default; operators run `backend/scripts/fetch_data_lake.py` to
+      # populate it.
+      - ./data_lake:/datalake:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -177,6 +185,8 @@ services:
     # `rq worker osw-jobs` CLI command.
     command: ["python", "scripts/run_worker.py"]
     environment: *backend-env
+    volumes:
+      - ./data_lake:/datalake:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -17,7 +17,7 @@ O diferencial arquitetural do OSW reside na **isolação criptográfica e de pro
 ### 2. Princípios de Engenharia e Design
 Em alinhamento aos rigorosos padrões de arquitetura corporativa da nossa organização, o desenvolvimento do OSW e o design de sua documentação são governados por:
 - **Security & Privacy by Design:** Arquitetura Zero-Trust para agentes locais, uso do protocolo Model Context Protocol (MCP) com canais STDIO, proteção contra Path Traversal (CWE-22) e conformidade LGPD.
-- **Isolamento de Processos Executáveis:** O "Ator" do sistema (DeepSeek-V3/Qwen) gera abstrações computacionais, cujas submissões são enviadas exclusivamente a containers encapsulados.
+- **Isolamento de Processos Executáveis:** O "Ator" do sistema (DeepSeek-V3/Qwen) gera abstrações computacionais, cujas submissões são enviadas exclusivamente a um sandbox `bubblewrap` (isolamento via user namespaces, sem runtime de container privilegiado) -- ver `backend/src/infrastructure/sandbox/bubblewrap_driver.py`.
 - **Agentic Tree Search & Actor-Critic Review:** Procura em árvore via MCTS e loops de correção sincronizados, evitando alucinações matemáticas na compilação de manuscritos científicos.
 - **Tolerância a Falhas em HPC:** Bridge paramétrica inteligente com Slurm para Jobs de computação quântica/moleculares remotos.
 - **Rastreabilidade Tripla:** Hashing e travamento (lock) do ambiente, código e dados usando criptografia imutável (SHA-256) em arquivos `uv.lock`.

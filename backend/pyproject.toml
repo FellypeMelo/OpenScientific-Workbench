@@ -52,6 +52,10 @@ dependencies = [
     "pypdf>=4.0.0",
     "paramiko>=3.4.0",
     "httpx>=0.27.0",
+    # HTML parsing for `infrastructure/mcp/literature_adapters.py`'s
+    # `extract_url_content` tool (real page fetch is done with the
+    # already-present `httpx`; this is only for parsing the returned HTML).
+    "beautifulsoup4>=4.12.0",
     "pyjwt>=2.8.0",
     "hvac>=2.1.0",
     "pyyaml>=6.0",

@@ -200,6 +200,45 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
+    # --- Taxonomy DB adapters (Fase 2 gap closure - taxonomy_db_adapters.py) ---
+    # The IUCN Red List API v4 (https://api.iucnredlist.org) requires a Bearer
+    # token on every request -- unlike the other three
+    # `taxonomy_db_adapters.py` endpoints (Paleobiology DB, WoRMS, Mouse
+    # Phenome DB), which are fully public/unauthenticated. No insecure
+    # default is supplied; obtain a token at
+    # https://api.iucnredlist.org/users/sign_up (or the token-request flow
+    # linked from the API docs) and set it via env/`.env`.
+    # `TaxonomyDBAdapters.query_iucn` raises a clear `ValueError` at the
+    # point of use if this resolves to `None`, mirroring the
+    # `DEEPSEEK_API_KEY` convention in
+    # `infrastructure/llm/model_client_factory.py`.
+    IUCN_API_TOKEN: Optional[str] = None
+
+    # --- NCBI Entrez eutils (DB adapter tools - expression_browser gap closure) ---
+    # Consumed by `infrastructure/mcp/expression_browser_db_adapters.py`'s
+    # `query_geo` tool (NCBI GEO DataSets search via esearch/esummary).
+    # Both are optional: NCBI's eutils work unauthenticated, but a contact
+    # email is their documented courtesy requirement for any automated/bulk
+    # use, and an API key raises the per-IP rate limit from 3 to 10
+    # requests/second. Neither is hardcoded -- `None` means "send the
+    # request without them", exactly like the LLM provider keys above.
+    NCBI_EMAIL: Optional[str] = None
+    NCBI_API_KEY: Optional[str] = None
+
+    # --- Literature/search DB adapters (Fase 2 gap closure - literature_adapters.py) ---
+    # All four optional: each tool degrades to an unauthenticated request (or,
+    # for `search_google`, raises a clear `LiteratureAPIError` -- the Google
+    # Custom Search API has no unauthenticated mode) when unset, mirroring
+    # every other credential field in this class. `NCBI_EMAIL`/`NCBI_API_KEY`
+    # above are intentionally REUSED here (not duplicated as
+    # `NCBI_ENTREZ_EMAIL`/`NCBI_ENTREZ_API_KEY`) -- `query_pubmed` and
+    # `expression_browser_db_adapters.py`'s `query_geo` both call the same
+    # NCBI Entrez eutils service, so one contact-email/key pair covers both.
+    CROSSREF_MAILTO: Optional[str] = None
+    SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
+    GOOGLE_SEARCH_API_KEY: Optional[str] = None
+    GOOGLE_SEARCH_ENGINE_ID: Optional[str] = None
+
     # --- MCP tool routing / Skills (RF-004/RF-009 gap closure) ---
     # Filesystem root `infrastructure/skills/skill_registration.py::register_skills`
     # walks for `*/SKILL.md` directories to compile and register as routable MCP

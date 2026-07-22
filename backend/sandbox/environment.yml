@@ -50,6 +50,12 @@ dependencies:
 
   # --- Sequence alignment / mapping / variant calling -------------------
   - samtools
+  # `bcftools` -- variant calling/filtering for
+  # `analyze_comparative_genomics_and_haplotypes` (bwa+samtools+bcftools
+  # pipeline) and `detect_and_characterize_structural_variations` (filters
+  # LUMPY's raw SV VCF), see action_tool_catalog.md's single-cell/omics
+  # category. Same bioconda channel/release train as `samtools` above.
+  - bcftools
   - bowtie2
   - bwa
   - bedtools
@@ -58,6 +64,10 @@ dependencies:
   - trimmomatic
   - mafft
   - muscle
+  # `analyze_protein_phylogeny`'s `alignment_method` default is "clustalw"
+  # (action_tool_catalog.md, genomics_popgen category) -- bundled alongside
+  # mafft/muscle so that default actually resolves to a real CLI tool.
+  - clustalw
   - fasttree
   - iqtree
   - homer
@@ -121,6 +131,13 @@ dependencies:
   - h5py
   - opencv
   - scikit-image
+  # TIFF stack I/O for `cell_imaging.py`'s time-lapse/calcium-imaging tools
+  # (`analyze_cell_migration_metrics`, `analyze_calcium_imaging_data`,
+  # `quantify_and_cluster_cell_motility`, `analyze_myofiber_morphology`,
+  # `analyze_mitochondrial_morphology_and_potential`, etc.) -- scikit-image's
+  # own TIFF plugin depends on it too, but it was not previously declared
+  # explicitly here.
+  - tifffile
   - hmmlearn
   - msprime
   - tskit
@@ -128,6 +145,10 @@ dependencies:
   - cobra
   - python-libsbml
   - optlang
+  # `networkx` -- `analyze_ddr_network_in_cancer` builds a real gene-gene
+  # correlation network over DNA-damage-response genes and computes
+  # degree/betweenness centrality on it (single-cell/omics category).
+  - networkx
 
   # --- Medical / cardiovascular imaging -----------------------------------
   # `reconstruct_3d_face_from_mri`, `calculate_brain_adc_map`,

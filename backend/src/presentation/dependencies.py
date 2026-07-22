@@ -31,18 +31,38 @@ from src.infrastructure.hpc.local_job_dispatcher import LocalJobDispatcher
 from src.infrastructure.hpc.nvidia_vram_checker import NvidiaVRAMChecker
 from src.infrastructure.hpc.slurm_dispatcher import SlurmSSHDispatcher
 from src.infrastructure.mcp.bio_direct_adapters import register_direct_bio_tools
+from src.infrastructure.mcp.expression_browser_db_adapters import register_expression_browser_db_tools
+from src.infrastructure.mcp.literature_adapters import register_literature_tools
+from src.infrastructure.mcp.pathway_regulatory_db_adapters import register_pathway_regulatory_db_tools
+from src.infrastructure.mcp.proteomics_pharma_db_adapters import register_proteomics_pharma_db_tools
 from src.infrastructure.mcp.server_registry import MCPServerRegistry
+from src.infrastructure.mcp.structure_db_adapters import register_structure_db_tools
+from src.infrastructure.mcp.taxonomy_db_adapters import register_taxonomy_db_tools
+from src.infrastructure.mcp.variant_clinical_db_adapters import register_variant_clinical_db_tools
 from src.infrastructure.parsing.pypdf_adapter import PypdfDocumentParser
 from src.infrastructure.persistence.database import get_db_session
 from src.infrastructure.persistence.postgres_artifact_repo import PostgresArtifactRepository
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
 from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
 from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorkspaceRepository
-from src.infrastructure.sandbox.bubblewrap_driver import BubblewrapSandboxDriver
+from src.infrastructure.sandbox.bubblewrap_driver import (
+    BubblewrapSandboxDriver,
+    SandboxUnavailableError,
+)
 from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
 from src.infrastructure.security.vault_client import VaultClient
 from src.infrastructure.skills.skill_registration import register_skills
 from src.infrastructure.telemetry import get_tracer
+from src.infrastructure.tools.biophysics_assays import register_biophysics_assays_tools
+from src.infrastructure.tools.cell_imaging import register_cell_imaging_tools
+from src.infrastructure.tools.cloning import register_cloning_tools
+from src.infrastructure.tools.genomics_popgen import register_genomics_popgen_tools
+from src.infrastructure.tools.immunology import register_immunology_tools
+from src.infrastructure.tools.pharmacology import register_pharmacology_tools
+from src.infrastructure.tools.physiology_imaging import register_physiology_imaging_tools
+from src.infrastructure.tools.single_cell_omics import register_single_cell_omics_tools
+from src.infrastructure.tools.support import register_support_tools
+from src.infrastructure.tools.synthetic_systems_biology import register_synthetic_systems_biology_tools
 from src.infrastructure.vector.qdrant_client import QdrantVectorStore
 
 logger = logging.getLogger(__name__)
@@ -226,13 +246,26 @@ _mcp_registry: Optional[MCPServerRegistry] = None
 
 def get_mcp_registry() -> MCPRouterPort:
     """Returns the process-wide `MCPServerRegistry`, constructing and
-    populating it on first call:
+    populating it on first call with the full Biomni-style tool catalog (see
+    `backend/docs/tools/`):
 
     - Direct bio-tool adapters (RF-004: real UniProt/RCSB PDB/STRING REST API
-      calls, see `infrastructure/mcp/bio_direct_adapters.py`) are ALWAYS
-      registered -- they are free, public, unauthenticated APIs that need no
-      configuration, unlike every other config-gated adapter in this
-      codebase.
+      calls, see `infrastructure/mcp/bio_direct_adapters.py`) plus the 7
+      domain-grouped DB/network adapter modules (structure, pathway/
+      regulatory, variant/clinical, expression-browser, proteomics/pharma,
+      taxonomy, literature/search -- ~37 tools total) are ALWAYS registered:
+      every one of them is either free/unauthenticated or degrades to a
+      clear call-time error when an optional credential (see each module's
+      own `Settings` fields, e.g. `IUCN_API_TOKEN`/`NCBI_EMAIL`/
+      `GOOGLE_SEARCH_API_KEY`) is unset -- never a registration-time failure.
+    - The 10 sandboxed action-tool categories (~145 tools, see
+      `infrastructure/tools/`) need a real sandbox driver to execute
+      against, so they are guarded the same way `register_skills` below is:
+      a host where `get_sandbox_driver()` itself fails (missing/
+      non-functional `bwrap`, or `SANDBOX_RUNTIME` misconfigured) must still
+      serve the network-only tools above -- it just registers zero action
+      tools instead of crashing the first request that resolves this
+      dependency.
     - Compiled Skills (RF-009, see `infrastructure/skills/skill_registration.py`)
       are registered from `settings.SKILLS_ROOT`, guarded in try/except: a
       missing/empty/malformed skills directory must never break the first
@@ -248,12 +281,44 @@ def get_mcp_registry() -> MCPRouterPort:
     if _mcp_registry is None:
         registry = MCPServerRegistry()
         register_direct_bio_tools(registry)
+        register_structure_db_tools(registry)
+        register_pathway_regulatory_db_tools(registry)
+        register_variant_clinical_db_tools(registry)
+        register_expression_browser_db_tools(registry)
+        register_proteomics_pharma_db_tools(registry)
+        register_taxonomy_db_tools(registry, iucn_api_token=settings.IUCN_API_TOKEN)
+        register_literature_tools(registry)
+
+        try:
+            action_tool_driver = get_sandbox_driver()
+        except SandboxUnavailableError:
+            logger.warning(
+                "get_sandbox_driver() failed while populating the MCP registry; "
+                "continuing with zero sandboxed action tools registered "
+                "(bio/DB/network tools above remain available). Action tools "
+                "will become reachable once this host has a working bwrap "
+                "sandbox (see SANDBOX_RUNTIME in infrastructure/config.py).",
+                exc_info=True,
+            )
+            action_tool_driver = None
+        if action_tool_driver is not None:
+            register_cloning_tools(registry, action_tool_driver)
+            register_genomics_popgen_tools(registry, action_tool_driver)
+            register_single_cell_omics_tools(registry, action_tool_driver)
+            register_cell_imaging_tools(registry, action_tool_driver)
+            register_biophysics_assays_tools(registry, action_tool_driver)
+            register_immunology_tools(registry, action_tool_driver)
+            register_physiology_imaging_tools(registry, action_tool_driver)
+            register_pharmacology_tools(registry, action_tool_driver)
+            register_synthetic_systems_biology_tools(registry, action_tool_driver)
+            register_support_tools(registry, action_tool_driver)
+
         try:
             register_skills(registry, settings.SKILLS_ROOT)
         except Exception:
             logger.warning(
                 "register_skills() failed for SKILLS_ROOT=%r; continuing with "
-                "zero skills registered (bio tools remain available).",
+                "zero skills registered (bio/DB/action tools remain available).",
                 settings.SKILLS_ROOT,
                 exc_info=True,
             )

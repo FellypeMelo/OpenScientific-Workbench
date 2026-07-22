@@ -55,7 +55,8 @@ async def create_session(
     if not await user_repo.get_by_id(user_id):
         await user_repo.save(User(id=user_id, email=f"user-{user_id}@osw.org"))
 
-    if not await workspace_repo.get_by_id(request.workspace_id):
+    existing_workspace = await workspace_repo.get_by_id(request.workspace_id)
+    if existing_workspace is None:
         await workspace_repo.save(
             Workspace(
                 id=request.workspace_id,
@@ -63,6 +64,17 @@ async def create_session(
                 fs_mount_path=f"workspace_{request.workspace_id}",
             )
         )
+    elif str(existing_workspace.owner_id) != current_user_id:
+        # IDOR fix: an authenticated caller must not be able to attach a new
+        # session to a workspace_id someone else already owns just by naming
+        # its UUID -- the auto-provision branch above only covers the "does
+        # not exist yet" case; a workspace that DOES exist still needs the
+        # same ownership check every other route in this codebase applies
+        # (`get_session`/`fork_workspace`/`chat_stream`/etc., see
+        # `tests/unit/test_idor_ownership.py`). Same 404 (not 403) so this
+        # cannot be used as an existence oracle for workspace ids the caller
+        # does not own.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
 
     use_case = CreateSessionUseCase(
         user_repo=user_repo,

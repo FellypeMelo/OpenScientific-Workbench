@@ -2,10 +2,15 @@
 Cross-user (IDOR -- Insecure Direct Object Reference) access-control tests for
 the production-hardening phase.
 
-Covers the three routes identified as vulnerable:
+Covers the routes identified as vulnerable:
 - `POST /api/v1/sessions` used to trust a client-supplied `user_id` verbatim
   to decide which user/workspace rows to provision and who a new session
-  belongs to.
+  belongs to. It also used to let an authenticated caller attach a brand-new
+  session to an EXISTING `workspace_id` they do not own (the auto-provision
+  branch only ever checked existence, not ownership, of a caller-supplied
+  workspace id) -- see
+  `test_create_session_against_another_users_existing_workspace_returns_404`
+  below (found during the final cross-phase regression pass).
 - `GET /api/v1/sessions/{session_id}` used to return ANY session regardless
   of who owns its workspace.
 - `POST /api/v1/workspaces/{workspace_id}/fork` used to fork ANY existing
@@ -97,6 +102,28 @@ def test_create_session_ignores_client_supplied_user_id_spoofing_another_user():
     # must NOT be able to read it back.
     victim_fetch = client.get(f"/api/v1/sessions/{session_id}", headers=victim_headers)
     assert victim_fetch.status_code == 404
+
+
+def test_create_session_against_another_users_existing_workspace_returns_404():
+    """
+    A caller who names an EXISTING `workspace_id` they do not own must not be
+    able to attach a brand-new session to it. The auto-provision branch in
+    `create_session` only covers a workspace_id that does not exist yet; a
+    workspace that already exists (created by a different authenticated user)
+    still needs the same ownership check every other route in this codebase
+    applies.
+    """
+    owner_headers = _auth_headers(uuid4())
+    attacker_headers = _auth_headers(uuid4())
+
+    _, workspace_id = _create_session(owner_headers)
+
+    response = client.post(
+        "/api/v1/sessions",
+        json={"workspace_id": workspace_id},
+        headers=attacker_headers,
+    )
+    assert response.status_code == 404
 
 
 def test_get_session_owned_by_another_user_returns_404():

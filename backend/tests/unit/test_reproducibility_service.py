@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 
 from src.domain.entities.scientific_artifact import ScientificArtifact
-from src.domain.services.reproducibility import compute_lockfile_hash
+from src.domain.services.reproducibility import compute_lockfile_hash, default_lockfile_path
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,3 +44,11 @@ def test_from_generated_output_stamps_lockfile_hash(tmp_path):
 
     assert artifact.name == "affinity_plot.png"
     assert artifact.sha256_hash == hashlib.sha256(b"reproducible-bytes").hexdigest()
+
+
+def test_default_lockfile_path_resolves_this_backends_own_uv_lock():
+    # Resolved independently of `cwd` (from the module's own file location),
+    # so it must agree with the test module's own independently-computed
+    # `_BACKEND_ROOT`, and the file it points at must actually exist.
+    assert default_lockfile_path() == str(_BACKEND_ROOT / "uv.lock")
+    assert Path(default_lockfile_path()).exists()

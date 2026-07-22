@@ -1,6 +1,5 @@
 from typing import Any
 from uuid import UUID
-from src.domain.entities.agent_session import AgentSession
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.services.numeric_validator import NumericValidator
 

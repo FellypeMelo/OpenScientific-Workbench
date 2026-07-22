@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { compileManuscript } from "@/lib/api-client";
-import type { ManuscriptComment } from "./types";
+import { compileManuscript, critiqueManuscript } from "@/lib/api-client";
+import { mapBackendComment, type ManuscriptComment } from "./types";
 
 type Mode = "editor" | "preview";
 type PreviewState = "idle" | "compiling" | "ready" | "error";
+type CritiqueState = "idle" | "loading" | "error";
 
 const DEFAULT_SOURCE = `\\documentclass{article}
 \\begin{document}
@@ -18,24 +19,17 @@ consistent with the reference structure.
 \\end{document}
 `;
 
-// Sample critic output (RF-002). Realistic scientific corrections, not filler.
-const DEFAULT_COMMENTS: ManuscriptComment[] = [
-  { id: "c1", targetText: "afinity", suggestion: "affinity" },
-  {
-    id: "c2",
-    targetText: "-7.82 kcal/mol",
-    suggestion: "-7.820 kcal/mol (within 1e-5 of the reference)",
-  },
-];
-
 export interface ManuscriptEditorProps {
   initialSource?: string;
+  /** Starting critic comments. Defaults to none -- real comments come from a
+   * live `POST /api/v1/manuscript/critique` call (RF-008), never a hardcoded
+   * demo array; the empty state below covers "nothing to show yet". */
   initialComments?: ManuscriptComment[];
 }
 
 export function ManuscriptEditor({
   initialSource = DEFAULT_SOURCE,
-  initialComments = DEFAULT_COMMENTS,
+  initialComments = [],
 }: ManuscriptEditorProps = {}) {
   const [mode, setMode] = useState<Mode>("editor");
   const [source, setSource] = useState(initialSource);
@@ -43,6 +37,8 @@ export function ManuscriptEditor({
   const [preview, setPreview] = useState<PreviewState>("idle");
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [critiqueState, setCritiqueState] = useState<CritiqueState>("idle");
+  const [critiqueError, setCritiqueError] = useState<string>("");
   const pdfUrlRef = useRef<string | null>(null);
 
   const revokePdf = useCallback(() => {
@@ -81,6 +77,22 @@ export function ManuscriptEditor({
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Falha ao compilar o manuscrito.");
       setPreview("error");
+    }
+  }
+
+  // RF-008: real critic output, replacing the previous hardcoded
+  // `DEFAULT_COMMENTS` demo array with a live `POST /api/v1/manuscript/critique`
+  // call over the manuscript's current source.
+  async function handleCritique() {
+    setCritiqueState("loading");
+    setCritiqueError("");
+    try {
+      const backendComments = await critiqueManuscript(source);
+      setComments(backendComments.map(mapBackendComment));
+      setCritiqueState("idle");
+    } catch (err) {
+      setCritiqueError(err instanceof Error ? err.message : "Falha ao revisar o manuscrito.");
+      setCritiqueState("error");
     }
   }
 
@@ -135,12 +147,31 @@ export function ManuscriptEditor({
           </div>
 
           <aside className="flex min-h-0 flex-col border-t border-[#1a1a24] md:border-l md:border-t-0 bg-[#0c0c0e]">
-            <div className="border-b border-[#141420] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#a0a0b8]">
-              Revisor Crítico
+            <div className="flex items-center justify-between border-b border-[#141420] px-4 py-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[#a0a0b8]">
+                Revisor Crítico
+              </span>
+              <button
+                data-testid="critique-button"
+                onClick={handleCritique}
+                disabled={critiqueState === "loading"}
+                className="rounded-md border border-[#2a4d40] px-2.5 py-1 text-xs font-medium text-[#86ffcf] transition-colors hover:bg-[#0e1b16] disabled:opacity-50"
+              >
+                {critiqueState === "loading" ? "Revisando..." : "Revisar com IA"}
+              </button>
             </div>
+            {critiqueState === "error" && (
+              <p data-testid="critique-error" className="px-3 pt-2 text-xs text-[#ff8686]">
+                {critiqueError}
+              </p>
+            )}
             <div className="min-h-0 flex-1 overflow-auto p-3">
               {comments.length === 0 ? (
-                <p className="text-sm text-[#707086]">Nenhuma sugestão do revisor.</p>
+                <p data-testid="critique-empty" className="text-sm text-[#707086]">
+                  {critiqueState === "loading"
+                    ? "Revisando o manuscrito..."
+                    : "Nenhuma sugestão do revisor."}
+                </p>
               ) : (
                 <ul className="flex flex-col gap-2">
                   {comments.map((c) => (

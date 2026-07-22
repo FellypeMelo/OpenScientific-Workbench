@@ -1,13 +1,27 @@
 import json
 import logging
+from datetime import datetime
 from typing import AsyncGenerator
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from src.application.use_cases.retrieve_context import RetrieveContextUseCase
+from src.domain.ports.graph_store import GraphStorePort
+from src.domain.ports.session_repository import SessionRepositoryPort
+from src.domain.ports.vector_store import VectorStorePort
+from src.domain.ports.workspace_repository import WorkspaceRepositoryPort
+from src.domain.services.pii_sanitizer import PIISanitizer
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
+from src.presentation.dependencies import (
+    get_current_user_id,
+    get_graph_store,
+    get_session_repository,
+    get_vector_store,
+    get_workspace_repository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +70,51 @@ def _sse(event: str, message: str) -> str:
 
 
 @router.post("/{session_id}/chat")
-async def chat_stream(session_id: UUID, request: ChatRequest):
+async def chat_stream(
+    session_id: UUID,
+    request: ChatRequest,
+    current_user_id: str = Depends(get_current_user_id),
+    session_repo: SessionRepositoryPort = Depends(get_session_repository),
+    workspace_repo: WorkspaceRepositoryPort = Depends(get_workspace_repository),
+    graph_store: GraphStorePort = Depends(get_graph_store),
+    vector_store: VectorStorePort = Depends(get_vector_store),
+):
+    # IDOR fix: this route used to stream a chat response for ANY session id
+    # without checking the session existed, let alone who owns it -- any
+    # authenticated caller could drive (and burn BYOK provider spend against)
+    # another user's session merely by guessing/knowing its UUID. Ownership is
+    # transitive through the session's workspace (see `routes/sessions.py`'s
+    # `get_session` for the identical pattern); a session that doesn't exist,
+    # or whose workspace the caller doesn't own, both 404 identically so this
+    # route cannot be used as an existence oracle.
+    session = await session_repo.get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    workspace = await workspace_repo.get_by_id(session.workspace_id)
+    if not workspace or str(workspace.owner_id) != current_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    # RNF-005 (LGPD/GDPR): sanitize the incoming prompt once, up front, before
+    # it is ever logged or written to `session.provenance_log` below.
+    #
+    # Deliberately NOT used for the actual `client.generate_stream(prompt=...)`
+    # call further down -- this mirrors the existing precedent in
+    # `application/use_cases/submit_task.py::execute`, which sanitizes only the
+    # provenance-log copy of the task text (`safe_task`) while still driving
+    # the orchestrator with the original, unsanitized `task_nl`. The reasoning
+    # carries over identically here: masking PII out of the prompt before it
+    # reaches the model would silently corrupt any legitimate request that
+    # actually needs that PII to do its job (e.g. "summarize findings for
+    # patient CPF 123.456.789-00" -- a masked "[CPF_MASKED]" is meaningless to
+    # the model and produces a wrong/unhelpful answer). The BYOK provider is a
+    # third party the researcher explicitly chose for this call (same trust
+    # boundary as every other BYOK request in this codebase); this route's own
+    # logs and `provenance_log` column are the boundary this project controls
+    # and must not retain PII, which is exactly what sanitizing only that copy
+    # achieves.
+    safe_prompt = PIISanitizer().sanitize(request.prompt)
+
     # Resolve the BYOK client *before* opening the SSE stream: a missing API
     # key (`ModelClientFactory.get_client` raises `ValueError`) or an unknown
     # provider name becomes a clean HTTP 400 up front, instead of a stream
@@ -66,6 +124,33 @@ async def chat_stream(session_id: UUID, request: ChatRequest):
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    # RAG-MARKER: ground the response on retrieved knowledge-graph relations
+    # + vector-store passages before opening the stream. Wrapped in its own
+    # try/except -- a Qdrant/Neo4j hiccup (unreachable service, malformed
+    # response, etc.) must degrade to today's ungrounded behavior (the plain
+    # `DEFAULT_SYSTEM_INSTRUCTION`), never turn into a 500 or block the chat
+    # turn entirely. Resolved *before* the stream opens, same rationale as
+    # the BYOK client above: any exception here still becomes a clean
+    # response (in this case, silently falling back) rather than failing
+    # mid-stream.
+    system_instruction = DEFAULT_SYSTEM_INSTRUCTION
+    try:
+        context = await RetrieveContextUseCase(graph_store, vector_store).execute(request.prompt)
+        if context:
+            system_instruction = (
+                f"{DEFAULT_SYSTEM_INSTRUCTION}\n\n"
+                "Use the following retrieved context to ground your answer "
+                "when it is relevant; ignore it if it is not:\n\n"
+                f"{context}"
+            )
+    except Exception:
+        logger.warning(
+            "RAG context retrieval failed for session %s; continuing with "
+            "ungrounded system instruction.",
+            session_id,
+            exc_info=True,
+        )
+
     async def event_generator() -> AsyncGenerator[str, None]:
         yield _sse("planning", "Initiating MCTS agent loop...")
 
@@ -73,7 +158,7 @@ async def chat_stream(session_id: UUID, request: ChatRequest):
         try:
             async for delta in client.generate_stream(
                 prompt=request.prompt,
-                system_instruction=DEFAULT_SYSTEM_INSTRUCTION,
+                system_instruction=system_instruction,
             ):
                 if not delta:
                     continue
@@ -89,8 +174,25 @@ async def chat_stream(session_id: UUID, request: ChatRequest):
                 session_id,
                 request.provider,
             )
+            session.provenance_log.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "action": "chat_message",
+                "provider": request.provider,
+                "prompt": safe_prompt,
+                "status": "error",
+            })
+            await session_repo.save(session)
             yield _sse("error", "The model provider stream failed. Please try again.")
             return
+
+        session.provenance_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "action": "chat_message",
+            "provider": request.provider,
+            "prompt": safe_prompt,
+            "status": "success",
+        })
+        await session_repo.save(session)
 
         yield _sse("completed", accumulated or "The model returned an empty response.")
 

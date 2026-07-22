@@ -16,6 +16,15 @@ class DAGNode(BaseModel):
     dependencies: List[str] = Field(default_factory=list)
     reward: Optional[float] = None
     status: str = "PENDING"
+    # Sandbox execution target (RF-005): which interpreter `SandboxNodeExecutor`
+    # (see `infrastructure/sandbox/sandbox_node_executor.py`) should run
+    # `command` in ("python", "bash", or "r"), and the literal, directly
+    # executable code/command that carries out this node's work. Populated by
+    # `LLMTaskPlanner` from the planner LLM's JSON response; default to a
+    # harmless no-op shape so existing callers/tests that never set these
+    # (e.g. `LLMNodeExecutor`, which ignores both) are unaffected.
+    language: str = "bash"
+    command: str = ""
     # Actor's produced numeric result and the critic's independently-expected
     # value, compared by the numeric reviewer (RF-002). Both optional: a node
     # with no numeric assertion is not gated.

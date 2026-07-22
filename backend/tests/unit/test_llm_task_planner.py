@@ -59,3 +59,43 @@ async def test_plan_raises_when_no_json_present():
 
     with pytest.raises(ValueError, match="plan"):
         await planner.plan("whatever")
+
+
+@pytest.mark.asyncio
+async def test_plan_parses_language_and_command_per_node():
+    """RF-005: the planner must pass through the LLM's per-node `language`/
+    `command` so `SandboxNodeExecutor` has something real to execute."""
+    resp = (
+        '{"nodes": ['
+        '{"id": "n1", "description": "print 42", "dependencies": [], '
+        '"language": "PYTHON", "command": "print(42)"},'
+        '{"id": "n2", "description": "list files", "dependencies": ["n1"], '
+        '"language": "bash", "command": "ls -la"}'
+        ']}'
+    )
+    planner = LLMTaskPlanner(FakeModel(resp))
+
+    snapshot = await planner.plan("compute and inspect")
+
+    n1 = snapshot.get_node("n1")
+    n2 = snapshot.get_node("n2")
+    # Case-normalized to lowercase regardless of what the model emitted.
+    assert n1.language == "python"
+    assert n1.command == "print(42)"
+    assert n2.language == "bash"
+    assert n2.command == "ls -la"
+
+
+@pytest.mark.asyncio
+async def test_plan_defaults_language_and_command_when_omitted():
+    """A model that doesn't emit `language`/`command` (e.g. an older prompt
+    version, or a model that ignores the instruction) must not crash the
+    planner -- `DAGNode` falls back to its own safe defaults."""
+    resp = '{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}'
+    planner = LLMTaskPlanner(FakeModel(resp))
+
+    snapshot = await planner.plan("do x")
+
+    node = snapshot.get_node("a")
+    assert node.language == "bash"
+    assert node.command == ""

@@ -1,6 +1,12 @@
 """RNF-004: sandbox execution must emit an OpenTelemetry span carrying its
 stdout/exit_code, with ERROR status on failure. Verified with an in-memory
 exporter -- no collector required.
+
+Note (RF-005 gap-closure phase): `execute_bash` now returns a
+`(stdout, exit_code)` tuple instead of a bare string (see
+`gvisor_driver.py`/`test_sandbox_multilang.py`), but none of these assertions
+capture/use its return value directly -- they only inspect the emitted span --
+so they are unaffected by that shape change.
 """
 import subprocess
 import types

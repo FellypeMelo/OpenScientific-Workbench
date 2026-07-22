@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from uuid import uuid4
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -5,7 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from src.domain.entities.user import User
 from src.domain.entities.workspace import Workspace
 from src.domain.entities.agent_session import AgentSession
+from src.domain.entities.scientific_artifact import ScientificArtifact
 from src.infrastructure.persistence.models import Base, UserModel
+from src.infrastructure.persistence.postgres_artifact_repo import PostgresArtifactRepository
 from src.infrastructure.persistence.postgres_session_repo import PostgresSessionRepository
 from src.infrastructure.persistence.postgres_user_repo import PostgresUserRepository
 from src.infrastructure.persistence.postgres_workspace_repo import PostgresWorkspaceRepository
@@ -66,6 +70,32 @@ async def test_postgres_repositories_integration(db_session):
 
 
 @pytest.mark.asyncio
+async def test_postgres_session_repository_persists_dag_generation_attempts(db_session):
+    """Regression test for the RF-002 bounded-retry counter reset bug: saving a
+    session with a non-zero `dag_generation_attempts` and re-fetching it through a
+    brand-new `PostgresSessionRepository` instance (against the same underlying DB)
+    must return the same count, not silently reset it to 0.
+
+    A fresh repo instance is used deliberately -- the bug was previously masked by
+    the in-memory repository returning the *same object by reference*, which trivially
+    "remembers" the attribute regardless of whether the SQL mapping is correct.
+    """
+    workspace_id = uuid4()
+
+    writer_repo = PostgresSessionRepository(db_session)
+    session = AgentSession(workspace_id=workspace_id, dag_generation_attempts=2)
+    await writer_repo.save(session)
+
+    # Fresh repo instance -- not the same Python object, and not reusing any cached
+    # domain entity -- to prove the count round-trips through the actual DB row.
+    reader_repo = PostgresSessionRepository(db_session)
+    refetched = await reader_repo.get_by_id(session.id)
+
+    assert refetched is not None
+    assert refetched.dag_generation_attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_postgres_user_repository_get_by_id_missing_returns_none(db_session):
     user_repo = PostgresUserRepository(db_session)
     assert await user_repo.get_by_id(uuid4()) is None
@@ -108,3 +138,47 @@ async def test_postgres_workspace_repository_save_updates_existing_workspace(db_
     updated = await workspace_repo.get_by_id(workspace.id)
     assert updated is not None
     assert updated.is_fork is True
+
+
+@pytest.mark.asyncio
+async def test_postgres_artifact_repository_get_by_id_missing_returns_none(db_session):
+    artifact_repo = PostgresArtifactRepository(db_session)
+    assert await artifact_repo.get_by_id(uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_artifact_repository_save_then_get_round_trips(db_session):
+    artifact_repo = PostgresArtifactRepository(db_session)
+
+    session_id = uuid4()
+    digest = hashlib.sha256(b"reproducible-bytes").hexdigest()
+    artifact = ScientificArtifact(session_id=session_id, name="affinity_plot.png", sha256_hash=digest)
+    await artifact_repo.save(artifact)
+
+    retrieved = await artifact_repo.get_by_id(artifact.id)
+    assert retrieved is not None
+    assert retrieved.id == artifact.id
+    assert retrieved.session_id == session_id
+    assert retrieved.name == "affinity_plot.png"
+    assert retrieved.sha256_hash == digest
+
+
+@pytest.mark.asyncio
+async def test_postgres_artifact_repository_save_updates_existing_artifact(db_session):
+    artifact_repo = PostgresArtifactRepository(db_session)
+
+    session_id = uuid4()
+    digest = hashlib.sha256(b"v1").hexdigest()
+    artifact = ScientificArtifact(session_id=session_id, name="v1.csv", sha256_hash=digest)
+    await artifact_repo.save(artifact)
+
+    # Saving again with the same id updates the existing row (exercises the
+    # "model already exists" branch of save()) instead of inserting a duplicate.
+    artifact.name = "v2.csv"
+    artifact.sha256_hash = hashlib.sha256(b"v2").hexdigest()
+    await artifact_repo.save(artifact)
+
+    updated = await artifact_repo.get_by_id(artifact.id)
+    assert updated is not None
+    assert updated.name == "v2.csv"
+    assert updated.sha256_hash == hashlib.sha256(b"v2").hexdigest()

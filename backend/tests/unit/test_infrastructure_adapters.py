@@ -39,8 +39,11 @@ def test_gvisor_driver_path_traversal(monkeypatch):
     # deterministically -- otherwise GitHub Actions (which sets CI=true) would run
     # a real `python correct_script.py` subprocess against a non-existent file.
     monkeypatch.delenv("CI", raising=False)
-    out = driver.execute_python_script("correct_script.py")
+    # `execute_python_script` returns `(stdout, exit_code)`, not a bare string
+    # (RF-005 gap-closure phase; see `gvisor_driver.py`).
+    out, exit_code = driver.execute_python_script("correct_script.py")
     assert "Mock execution output" in out
+    assert exit_code == 0
 
 @pytest.mark.asyncio
 async def test_slurm_dispatcher_mock():

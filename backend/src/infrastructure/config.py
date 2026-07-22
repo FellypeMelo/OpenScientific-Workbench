@@ -14,9 +14,18 @@ Design notes:
   Fase 3 LLM provider clients, etc.) are responsible for validating/raising close to
   the point of use if the resolved value is `None` outside of local development.
 """
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolved once at import time (same rationale as `jwt_auth.py`'s
+# `_SIGNING_SECRET`): `config.py` lives at
+# `<repo_root>/backend/src/infrastructure/config.py`, so `parents[3]` from
+# this file is `<repo_root>` -- `[0]=infrastructure, [1]=src, [2]=backend,
+# [3]=<repo_root>`. Verified by actually walking `Path(__file__).resolve()`
+# rather than guessed.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -36,7 +45,22 @@ class Settings(BaseSettings):
     # `ENV=production` explicitly via the environment; the default here is the
     # permissive one on purpose so a fresh checkout / CI runner / local dev server
     # boots without any `.env` file.
-    ENV: str = "development"
+    #
+    # Constrained to a `Literal` (not a bare `str`) so a typo'd deployment value
+    # (e.g. `ENV=prod` instead of `ENV=production`) fails LOUDLY at `Settings()`
+    # construction time -- `pydantic-settings` raises a `ValidationError` before
+    # the app ever finishes importing -- instead of silently falling through to
+    # `jwt_auth.py`'s permissive "not production" dev branch (ephemeral JWT
+    # secret, etc.) while the operator believes they configured a real
+    # production deployment.
+    ENV: Literal["development", "staging", "production"] = "development"
+
+    # --- Logging (production hardening) ---
+    # Consumed by `logging.config.dictConfig` in `presentation/main.py` to set the
+    # root logger level. Kept a permissive `str` (not a `Literal`) since it is
+    # passed straight through to the stdlib `logging` module, which already
+    # validates level names itself.
+    LOG_LEVEL: str = "INFO"
 
     # --- Relational persistence (Fase 1 - Postgres wiring) ---
     # Defaults to a local SQLite file (via aiosqlite) so the app and test suite can
@@ -55,9 +79,33 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: Optional[str] = None
 
-    # --- Vector store ---
+    # --- Vector store (RAG-MARKER gap closure) ---
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
+    # Unlike Neo4j/Vault (which gate real-vs-mock on whether a credential is
+    # configured), Qdrant is a normal, always-on Compose service in this
+    # architecture (see `docker-compose.yml`'s `qdrant` service) -- not
+    # optional infra -- so this defaults to `True`. `QdrantVectorStore` (see
+    # `infrastructure/vector/qdrant_client.py`) still branches on it exactly
+    # like the other Fase 4 adapters branch on credential presence: `False`
+    # (a fresh checkout / CI unit-test run with no live Qdrant instance)
+    # keeps the deterministic in-memory mock path, so importing/constructing
+    # it never requires a running Qdrant server.
+    QDRANT_ENABLED: bool = True
+    QDRANT_COLLECTION: str = "osw_documents"
+
+    # --- PDF parsing (RAG-MARKER gap closure) ---
+    # Whether `MarkerDocumentParser` (see `infrastructure/parsing/marker_adapter.py`)
+    # -- the heavy OCR-grade PDF parser (torch/surya-ocr via the optional
+    # `marker-pdf` package) -- is usable at all. Defaults to `False`: the
+    # default ingestion path (`PypdfDocumentParser`, pure Python, no GPU/model
+    # download) is what `POST /api/v1/documents/ingest` uses out of the box.
+    # Flipping this to `True` alone is not sufficient to actually use Marker
+    # -- the optional `marker-pdf` package must also be installed -- but it
+    # IS sufficient to turn "disabled by config" into "disabled because the
+    # package is missing" as the reported reason, see
+    # `MarkerDocumentParser.parse`.
+    MARKER_ENABLED: bool = False
 
     # --- Secrets manager (Fase 4 - Vault) ---
     VAULT_ADDR: str = "http://localhost:8200"
@@ -68,12 +116,34 @@ class Settings(BaseSettings):
     # `NEO4J_USER` above.
     VAULT_SSH_ROLE: str = "hpc-ssh-role"
 
+    # --- HPC job dispatch backend selection (RF-006/RNF-003/RNF-008 gap closure) ---
+    # Which `HPCJobDispatcherPort` adapter `presentation/dependencies.py`'s
+    # `get_hpc_dispatcher()` constructs:
+    #   - "local" (default): `LocalJobDispatcher` (see
+    #     `infrastructure/hpc/local_job_dispatcher.py`) -- a Redis-backed RQ
+    #     queue ("osw-jobs") consumed by `scripts/run_worker.py` /
+    #     `docker-compose.yml`'s `worker` service. Matches this project's
+    #     locked architecture (single local Linux server, no external
+    #     cluster) and needs no extra infra beyond the Redis instance every
+    #     other adapter here already uses.
+    #   - "slurm": `SlurmSSHDispatcher` (see
+    #     `infrastructure/hpc/slurm_dispatcher.py`) -- real SSH dispatch to an
+    #     actual Slurm cluster, for operators who have one. Dormant by
+    #     default; only reachable by explicitly setting this to "slurm" (and,
+    #     for real dispatch rather than its own mock fallback, the
+    #     `SLURM_SSH_*` settings below).
+    # Constrained to a `Literal` for the same reason as `ENV` above: a typo'd
+    # value fails loudly at `Settings()` construction instead of silently
+    # falling through to a default nobody chose on purpose.
+    HPC_BACKEND: Literal["local", "slurm"] = "local"
+
     # --- HPC / Slurm dispatch (Fase 4 - paramiko SSH) ---
     # Real `sbatch` dispatch over SSH (see `infrastructure/hpc/slurm_dispatcher.py`)
     # is only attempted when ALL THREE of these are configured. Any one of them
     # missing means "no real HPC gateway is reachable from here" (a fresh
     # checkout, CI runner, or local dev machine), so the dispatcher falls back to
     # its deterministic mock job id instead of failing or silently doing nothing.
+    # Only relevant when HPC_BACKEND=="slurm" above.
     SLURM_SSH_HOST: Optional[str] = None
     SLURM_SSH_USER: Optional[str] = None
     SLURM_SSH_KEY_PATH: Optional[str] = None
@@ -84,6 +154,36 @@ class Settings(BaseSettings):
     # True on a Linux host with a Btrfs-formatted workspace volume. The manager
     # additionally self-disables off Linux, so enabling it is always safe.
     USE_BTRFS: bool = False
+
+    # --- Workspace file upload (RF-005 gap closure) ---
+    # Hard cap on a single `POST /workspaces/{id}/files` upload, enforced via
+    # bounded chunked reads (see `presentation/routes/workspaces.py`) so a
+    # malicious/oversized upload can't exhaust disk before being rejected.
+    MAX_UPLOAD_MB: int = 50
+
+    # --- Sandboxed code execution (RF-005/RNF-001/RNF-002 - bubblewrap) ---
+    # Which isolation backend `SandboxNodeExecutor` (see
+    # `infrastructure/sandbox/sandbox_node_executor.py`) runs DAG-node
+    # `language`/`command` pairs through:
+    #   - "bubblewrap" (default, REAL isolation): shells out to `bwrap` with a
+    #     locked-down profile (read-only system binds, isolated tmpfs
+    #     workspace, no network, resource limits). This is the only backend
+    #     that provides an actual security boundary.
+    #   - "subprocess": runs the command directly via `subprocess.run`, no
+    #     isolation at all. Fast for unit tests; NEVER use for untrusted code.
+    #   - "mock": no execution happens at all; a deterministic canned result is
+    #     returned. For hosts that genuinely cannot run bwrap (e.g. this
+    #     project's Windows dev sandbox).
+    #
+    # Deliberately NOT config-gated to a silent mock fallback like the other
+    # adapters in this codebase (Neo4j/Vault/Slurm/etc): sandboxed code
+    # execution is a security boundary, not a nice-to-have. If this stays
+    # "bubblewrap" (the real default) and the `bwrap` binary is missing or
+    # non-functional on this host, `BubblewrapSandboxDriver` raises
+    # `SandboxUnavailableError` LOUDLY at construction time instead of
+    # silently falling back to unsandboxed execution -- an operator must
+    # either install bubblewrap or explicitly opt into "subprocess"/"mock".
+    SANDBOX_RUNTIME: Literal["bubblewrap", "subprocess", "mock"] = "bubblewrap"
 
     # --- Auth (Fase 2 - JWT middleware) ---
     # No insecure default is supplied on purpose. Left `Optional`/`None` so importing
@@ -99,6 +199,19 @@ class Settings(BaseSettings):
     GLM_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+
+    # --- MCP tool routing / Skills (RF-004/RF-009 gap closure) ---
+    # Filesystem root `infrastructure/skills/skill_registration.py::register_skills`
+    # walks for `*/SKILL.md` directories to compile and register as routable MCP
+    # tools (see `presentation/dependencies.py::get_mcp_registry`). Defaults to
+    # `<repo_root>/skills` -- a directory that does not exist in this repo yet
+    # (only unrelated coding-agent skills live under `.agents/skills`), so out of
+    # the box this registers zero skills. That is expected: `register_skills`
+    # already no-ops safely on a missing/empty directory (`Path.glob` on a
+    # nonexistent path yields no matches rather than raising), and the call site
+    # additionally wraps it in try/except as defense in depth. Override via the
+    # `SKILLS_ROOT` env var once real scientific Skill content is authored.
+    SKILLS_ROOT: str = str(_REPO_ROOT / "skills")
 
     # --- CORS (Fase 5 - frontend gap closure) ---
     # The Next.js frontend (`frontend/`) runs on its own origin (`next dev`

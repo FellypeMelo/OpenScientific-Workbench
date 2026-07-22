@@ -56,6 +56,13 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://osw_user:osw_password_secure_123@localhost:5432/osw_session_db
           QDRANT_HOST: localhost
+          # RAG-MARKER gap closure: `QDRANT_ENABLED` already defaults to
+          # `true` (see `infrastructure/config.py`), but pinned here
+          # explicitly since this job -- unlike the plain unit-test job in
+          # `ci.yml` -- actually provisions a real `qdrant` service
+          # container (see this file's `services:` block above) for
+          # `QdrantVectorStore` to talk to for real.
+          QDRANT_ENABLED: "true"
           REDIS_HOST: localhost
           # BYOK configurations (Fallback mocks for CI execution)
           DEEPSEEK_API_KEY: ${{ secrets.CI_DEEPSEEK_API_KEY || 'mock-deepseek-key' }}

@@ -39,11 +39,21 @@ RUN pip install --upgrade pip && pip install .
 
 FROM python:3.12-slim AS runtime
 
-# Non-root runtime user (defense in depth -- see docker-compose.prod.yml /
+# Non-root runtime user (defense in depth -- see docker-compose.yml /
 # k8s manifests for the rest of the hardening story: read-only root FS,
 # dropped capabilities, etc. are applied at the orchestrator level).
 RUN groupadd --system --gid 1000 osw && \
     useradd --system --uid 1000 --gid osw --no-create-home --shell /usr/sbin/nologin osw
+
+# Bubblewrap (bwrap) -- unprivileged Linux sandboxing for code execution,
+# replacing the earlier gVisor/runsc design (see
+# `src/infrastructure/sandbox/`). No Docker socket exposure and no second
+# privileged container needed: `bwrap` runs as a regular subprocess using
+# user namespaces. Installed here so it's on PATH in the runtime image; a
+# later phase adds the Python adapter that actually shells out to it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends bubblewrap && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -60,22 +70,36 @@ COPY --from=builder /opt/venv /opt/venv
 # Clean copy of application code only (no tests/, no .venv, no .git, no
 # .egg-info build leftovers -- see backend/.dockerignore).
 COPY src ./src
+# `scripts/run_worker.py` -- the RQ worker entrypoint for the local
+# (HPC_BACKEND=local, default) job queue backend, run by `docker-compose.yml`'s
+# `worker` service instead of uvicorn. See that script's module docstring for
+# why it exists instead of the bare `rq worker osw-jobs` CLI command.
+COPY scripts ./scripts
+# Alembic migration sources (see `backend/migrations/`). NOT run automatically by
+# the CMD below -- `presentation/main.py`'s `lifespan` only bootstraps tables via
+# `create_all` when `ENV != production` (see that module). This same image is what
+# a deploy runs `alembic upgrade head` against instead, as a separate init step,
+# before any replica starts serving traffic (`docker compose run --rm backend
+# alembic upgrade head`; see `backend/README.md` for the exact command).
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN chown -R osw:osw /app
 USER osw
 
 EXPOSE 8000
 
-# Used by `docker-compose.prod.yml` / k8s readiness+liveness probes. No
-# `/health` route exists yet (see `presentation/middleware/jwt_auth.py`'s
-# `UNAUTHENTICATED_PATHS` docstring), so this hits `/openapi.json` instead --
-# one of the few routes the JWT middleware allowlists unauthenticated, and it
-# only returns 200 once FastAPI has fully constructed the app (including the
-# `lifespan` startup step that creates the DB tables). Implemented with the
-# stdlib (`urllib`) rather than curl/wget, neither of which exists in the
+# Used by `docker-compose.yml` / plain `docker run` deployments (k8s uses
+# its own separate readiness+liveness probes instead, see
+# `k8s/backend-deployment.yaml`). Hits `/health` -- the liveness-only probe
+# (see `presentation/routes/health.py`'s module docstring): no downstream
+# Postgres/Redis calls, so a database outage never causes Docker to
+# kill-and-restart an otherwise-healthy container. `/health` is allowlisted
+# unauthenticated in `presentation/middleware/jwt_auth.py`. Implemented with
+# the stdlib (`urllib`) rather than curl/wget, neither of which exists in the
 # `python:3.12-slim` runtime image.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" || exit 1
 
 # Exec form: signals (SIGTERM on `docker stop` / k8s pod termination) reach
 # uvicorn directly instead of a shell process.

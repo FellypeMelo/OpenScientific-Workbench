@@ -33,7 +33,7 @@ graph TD
 - [`backend/src/infrastructure/`](file:///G:/Programas/OpenScientific-Workbench/backend/src/infrastructure/) — Infrastructure and database adapters.
 - [`backend/src/presentation/`](file:///G:/Programas/OpenScientific-Workbench/backend/src/presentation/) — FastAPI route handlers.
 - [`frontend/src/app/`](file:///G:/Programas/OpenScientific-Workbench/frontend/src/app/) — Next.js client panels and layouts.
-- [`docker-compose.dev.yml`](file:///G:/Programas/OpenScientific-Workbench/docker-compose.dev.yml) — Local multi-tenant services.
+- [`docker-compose.yml`](file:///G:/Programas/OpenScientific-Workbench/docker-compose.yml) — Canonical single-server stack (postgres/redis/neo4j/qdrant + backend/worker/frontend, optional `vault`).
 
 ---
 

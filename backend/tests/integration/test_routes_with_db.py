@@ -63,18 +63,25 @@ async def test_create_session_persists_user_and_workspace_rows(_isolated_test_da
     Asserts the dev-convenience auto-provisioning of the caller's user/workspace
     actually lands rows in the ORM tables (not just an in-memory dict), by opening
     a fresh session against the very same isolated SQLite file the route used.
+
+    The provisioned owner is the AUTHENTICATED caller (the token's `sub` claim,
+    via `get_current_user_id`) -- NOT a `user_id` value the client could put in
+    the request body (see `routes/sessions.py`'s IDOR fix / `CreateSessionRequest`
+    docstring) -- so the token here is minted for `user_id` specifically, instead
+    of reusing the module-level `_AUTH_HEADERS`.
     """
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from sqlalchemy.future import select
 
     user_id = uuid4()
     workspace_id = uuid4()
+    auth_headers = {"Authorization": f"Bearer {create_access_token(user_id, iam_role='scientist')}"}
 
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/sessions",
-            json={"user_id": str(user_id), "workspace_id": str(workspace_id)},
-            headers=_AUTH_HEADERS,
+            json={"workspace_id": str(workspace_id)},
+            headers=auth_headers,
         )
         assert response.status_code == 201
 

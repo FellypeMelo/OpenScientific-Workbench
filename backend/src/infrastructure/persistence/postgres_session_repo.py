@@ -25,7 +25,8 @@ class PostgresSessionRepository(SessionRepositoryPort):
             workspace_id=model.workspace_id,
             session_status=model.session_status,
             dag_snapshot=model.dag_snapshot,
-            provenance_log=model.provenance_log
+            provenance_log=model.provenance_log,
+            dag_generation_attempts=model.dag_generation_attempts
         )
 
     async def save(self, session: AgentSession) -> None:
@@ -39,13 +40,15 @@ class PostgresSessionRepository(SessionRepositoryPort):
             model.session_status = session.session_status
             model.dag_snapshot = session.dag_snapshot
             model.provenance_log = session.provenance_log
+            model.dag_generation_attempts = session.dag_generation_attempts
         else:
             model = AgentSessionModel(
                 id=session.id,
                 workspace_id=session.workspace_id,
                 session_status=session.session_status,
                 dag_snapshot=session.dag_snapshot,
-                provenance_log=session.provenance_log
+                provenance_log=session.provenance_log,
+                dag_generation_attempts=session.dag_generation_attempts
             )
             self.db_session.add(model)
             

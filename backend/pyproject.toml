@@ -7,6 +7,11 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn>=0.30.0",
+    # Required by FastAPI/Starlette to parse `multipart/form-data` requests --
+    # the workspace file-upload route (`POST /workspaces/{id}/files`, see
+    # `presentation/routes/workspaces.py`) uses `UploadFile`/`Form`, which
+    # hard-fails at request time (500) without this installed.
+    "python-multipart>=0.0.9",
     # `[email]` extra pulls email-validator, required by the EmailStr field on the
     # User entity (domain/entities/user.py). It used to arrive transitively via
     # pydantic-ai; declaring it directly keeps EmailStr working after that removal.
@@ -14,19 +19,51 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29.0",
+    # Schema migrations (see `backend/migrations/`). A production runtime dependency,
+    # not dev-only: real deployments run `alembic upgrade head` as a separate init
+    # step before the app boots (see `presentation/main.py`'s `lifespan` and
+    # `backend/README.md`), so the container image that runs that step needs it.
+    "alembic>=1.13.0",
     "redis>=5.0.4",
+    # Local (default) HPC job queue backend (RF-006/RNF-003/RNF-008 gap
+    # closure): `LocalJobDispatcher` (see
+    # `infrastructure/hpc/local_job_dispatcher.py`) enqueues onto an RQ queue
+    # backed by the same Redis instance as everything else above, and
+    # `scripts/run_worker.py` / the `worker` service in `docker-compose.yml`
+    # consume it. Slurm (`HPC_BACKEND=slurm`) remains the optional, dormant
+    # alternative and does not need this dependency.
+    "rq>=2.0.0",
     "neo4j>=5.21.0",
-    "qdrant-client>=1.9.1",
+    # `[fastembed]` extra pulls in FastEmbed (ONNX-runtime local inference,
+    # CPU-only, no GPU/torch needed) so `QdrantVectorStore` (see
+    # `infrastructure/vector/qdrant_client.py`) can pass `models.Document(...)`
+    # to `upsert`/`query_points` and have both indexed chunks and search
+    # queries embedded on-the-fly against a real Qdrant instance -- no
+    # separate embedding-model-serving infra required. Model weights (~130MB,
+    # the default `BAAI/bge-small-en`) download once on first real use, not
+    # at import time.
+    "qdrant-client[fastembed]>=1.9.1",
+    # Default (RAG-MARKER) PDF text-extraction dependency: pure Python, no
+    # GPU/model download, used by `infrastructure/parsing/pypdf_adapter.py`.
+    # The heavier OCR-grade alternative (Marker, torch-based) stays an
+    # opt-in, lazily-imported extra -- see
+    # `infrastructure/parsing/marker_adapter.py` -- NOT declared here, so the
+    # default install stays light.
+    "pypdf>=4.0.0",
     "paramiko>=3.4.0",
     "httpx>=0.27.0",
     "pyjwt>=2.8.0",
     "hvac>=2.1.0",
     "pyyaml>=6.0",
-    # OpenTelemetry: `telemetry.py` sets up tracing at app startup (called from the
-    # main.py lifespan) and `gvisor_driver.py` emits sandbox spans, so these are
-    # runtime deps, not dev-only. instrumentation-fastapi pulls the instrumentation
-    # stack; sdk pulls the api. Undeclared before -> only resolved by an incidental
-    # local venv install; a clean CI environment failed importing FastAPIInstrumentor.
+    # OpenTelemetry: `telemetry.py`'s `setup_telemetry()` is called from
+    # `main.py` at MODULE IMPORT TIME (immediately after the last
+    # `app.add_middleware(...)` call, NOT from inside the `lifespan()` context
+    # manager -- see the comment directly above that call in `main.py` for why
+    # calling it from `lifespan()` would silently produce zero spans), and
+    # `gvisor_driver.py` emits sandbox spans, so these are runtime deps, not
+    # dev-only. instrumentation-fastapi pulls the instrumentation stack; sdk
+    # pulls the api. Undeclared before -> only resolved by an incidental local
+    # venv install; a clean CI environment failed importing FastAPIInstrumentor.
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-instrumentation-fastapi>=0.48b0",

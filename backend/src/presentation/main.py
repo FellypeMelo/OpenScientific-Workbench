@@ -1,3 +1,4 @@
+import logging.config
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -5,24 +6,87 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.infrastructure.config import settings
 from src.infrastructure.persistence.database import engine, init_models
+from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
+from src.infrastructure.telemetry import setup_telemetry
 from src.presentation.middleware.jwt_auth import JWTAuthMiddleware
 from src.presentation.middleware.rate_limit import RateLimitMiddleware
 from src.presentation.middleware.security_headers import SecurityHeadersMiddleware
+from src.presentation.dependencies import close_graph_store, close_vector_store
 from src.presentation.routes.sessions import router as sessions_router
 from src.presentation.routes.chat import router as chat_router
+from src.presentation.routes.tasks import router as tasks_router
 from src.presentation.routes.auth import router as auth_router
 from src.presentation.routes.workspaces import router as workspaces_router
 from src.presentation.routes.manuscript import router as manuscript_router
+from src.presentation.routes.hpc import router as hpc_router
+from src.presentation.routes.mcp import router as mcp_router
+from src.presentation.routes.documents import router as documents_router
+from src.presentation.routes.health import router as health_router
+
+
+# Structured (JSON) logging, configured at import time so every log line emitted
+# during app startup (including the `lifespan` DB bootstrap below) and by every
+# request thereafter is machine-parseable -- required for the health/readiness
+# checks' `logger.warning(..., exc_info=True)` calls, and any log aggregator
+# (ELK/Loki/CloudWatch/etc.) fronting a real deployment, to be useful. Level is
+# driven by `settings.LOG_LEVEL` (default `INFO`) so it can be raised to `DEBUG`
+# in a specific environment without a code change.
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "json": {
+                # A hand-rolled minimal JSON formatter (no extra dependency like
+                # `python-json-logger`): every field a log aggregator typically
+                # indexes on (timestamp, level, logger name, message) plus
+                # `exc_info` when present, one line per record.
+                "format": (
+                    '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
+                    '"logger": "%(name)s", "message": "%(message)s"}'
+                ),
+            },
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "json",
+            },
+        },
+        "root": {
+            "level": settings.LOG_LEVEL,
+            "handlers": ["console"],
+        },
+    }
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure the ORM tables exist. There is no Alembic migration tool wired
-    # up yet (Fase 1 scope is limited to fiar Postgres na aplicação), so `create_all`
-    # is used to bootstrap a fresh SQLite/Postgres database for local dev and tests.
-    await init_models()
+    # Startup: bootstrap the ORM tables ONLY for dev/test convenience.
+    #
+    # Alembic is now wired up (see `backend/migrations/`, `backend/alembic.ini`), and
+    # is the source of truth for schema changes in any real deployment. Running
+    # `Base.metadata.create_all` (via `init_models()`) inside the app process is a
+    # dev/CI-only shortcut: it lets a fresh checkout / test runner boot against an
+    # empty SQLite/Postgres database with zero setup, but it does NOT know how to
+    # apply incremental schema changes, does NOT record migration history, and
+    # racing it against a real production rollout (e.g. multiple replicas booting
+    # concurrently) is exactly the kind of uncoordinated-DDL hazard Alembic exists to
+    # prevent. In production this step is skipped entirely; the deployment process
+    # MUST run `alembic upgrade head` (see `backend/README.md`) as a separate, single
+    # init step BEFORE any app replica starts serving traffic.
+    if settings.ENV != "production":
+        await init_models()
     yield
-    # Shutdown: dispose the engine's connection pool cleanly.
+    # Shutdown: release every real connection pool this process may have
+    # lazily created, cleanly. `QdrantVectorStore`/`Neo4jGraphClient` (RAG-MARKER)
+    # are process-wide singletons (see `presentation/dependencies.py`) that
+    # were, until now, never closed anywhere -- a real `AsyncQdrantClient`/
+    # `AsyncGraphDatabase` driver leaks its connection pool on process exit
+    # without this.
+    await close_vector_store()
+    await close_graph_store()
     await engine.dispose()
 
 
@@ -83,6 +147,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# OpenTelemetry instrumentation MUST be wired up here -- at module import time,
+# immediately after the last `app.add_middleware(...)` call above -- and NOT
+# from inside `lifespan()` below (a prior version of this file did that; if you
+# are looking at this because of that comment elsewhere, this is the fix).
+# Reasoning: Starlette builds and caches its middleware stack
+# (`app.middleware_stack`) lazily, the FIRST time the ASGI app is called at
+# all -- and that first call is the `lifespan.startup` message itself, which
+# happens BEFORE the `async def lifespan(app)` generator's body (the code after
+# `yield` notwithstanding, even the code before its `yield`) ever runs.
+# `FastAPIInstrumentor.instrument_app` (inside `setup_telemetry`, see
+# `infrastructure/telemetry.py`) works by monkey-patching
+# `app.build_middleware_stack`, so it MUST run before that first ASGI call
+# builds and caches the (uninstrumented) stack -- calling it from inside
+# `lifespan()` is always too late and silently produces zero spans, with no
+# error raised anywhere to indicate the mistake.
+setup_telemetry(app)
+
 
 # Global Error Handler (Matches error_catalog.md guidelines)
 @app.exception_handler(ValueError)
@@ -116,9 +197,48 @@ async def value_error_handler(request: Request, exc: ValueError):
         content={"error_code": 4000, "message": error_msg}
     )
 
+
+# Sandbox drivers (`GVisorSandboxDriver`, `BubblewrapSandboxDriver`) raise
+# `PermissionError` -- an `OSError` subclass, NOT a `ValueError` -- on a
+# path-traversal violation (see `infrastructure/sandbox/bubblewrap_driver.py`),
+# so it falls through the `ValueError` handler above and would otherwise
+# surface as a raw, unhandled 500. Map it the same way as the equivalent
+# `ValueError` branch: a clean 400 "Access Denied" response.
+@app.exception_handler(PermissionError)
+async def permission_error_handler(request: Request, exc: PermissionError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error_code": 4001, "message": "Access Denied: Path traversal detected."},
+    )
+
+
+# `BubblewrapSandboxDriver` fails LOUD (raises, never silently falls back --
+# see its module docstring / the repo-wide sandboxing ground rule) when the
+# real sandbox isolation it is configured to provide isn't actually available
+# on this host. Any call site that doesn't already convert this to a clean
+# HTTP response inline (`presentation/routes/tasks.py` does, for the one live
+# route today) is caught here as defense in depth, as 503 (capability
+# genuinely unavailable), not a raw 500.
+@app.exception_handler(SandboxUnavailableError)
+async def sandbox_unavailable_handler(request: Request, exc: SandboxUnavailableError):
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"error_code": 5031, "message": str(exc)},
+    )
+
 # Mount Routes under /api/v1 prefix
 app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(manuscript_router, prefix="/api/v1")
+app.include_router(hpc_router, prefix="/api/v1")
+app.include_router(mcp_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
+
+# Liveness/readiness probes are mounted at the root (no `/api/v1` prefix), to
+# match the plain `/health` / `/ready` paths orchestrators conventionally probe
+# and that `backend/Dockerfile`'s `HEALTHCHECK` and
+# `k8s/backend-deployment.yaml`'s probes are configured against.
+app.include_router(health_router)

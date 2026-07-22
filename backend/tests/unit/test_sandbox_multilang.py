@@ -2,6 +2,13 @@
 
 Subprocess is patched so the CI-branch behaviour is asserted deterministically
 without requiring bash/Rscript to be installed in the test environment.
+
+`GVisorSandboxDriver`'s public `execute_*` methods return `(stdout, exit_code)`
+tuples (RF-005 gap-closure phase: the sandbox subsystem moved to
+`BubblewrapSandboxDriver` as the real default, and this dormant driver's
+public wrapper was fixed to stop collapsing `_execute`'s already-3-tuple
+result down to just the stdout string -- see `gvisor_driver.py`), not a bare
+string -- these assertions unpack that tuple.
 """
 import types
 
@@ -11,12 +18,16 @@ from src.infrastructure.sandbox.gvisor_driver import GVisorSandboxDriver
 
 def test_execute_bash_mock_when_not_ci(monkeypatch):
     monkeypatch.delenv("CI", raising=False)
-    assert "Mock execution output" in GVisorSandboxDriver().execute_bash("echo hi")
+    out, exit_code = GVisorSandboxDriver().execute_bash("echo hi")
+    assert "Mock execution output" in out
+    assert exit_code == 0
 
 
 def test_execute_r_script_mock_when_not_ci(monkeypatch):
     monkeypatch.delenv("CI", raising=False)
-    assert "Mock execution output" in GVisorSandboxDriver().execute_r_script("print('hi')")
+    out, exit_code = GVisorSandboxDriver().execute_r_script("print('hi')")
+    assert "Mock execution output" in out
+    assert exit_code == 0
 
 
 def test_execute_bash_invokes_bash_under_ci(monkeypatch):
@@ -29,9 +40,10 @@ def test_execute_bash_invokes_bash_under_ci(monkeypatch):
 
     monkeypatch.setattr(gv.subprocess, "run", fake_run)
 
-    out = GVisorSandboxDriver().execute_bash("echo hi")
+    out, exit_code = GVisorSandboxDriver().execute_bash("echo hi")
 
     assert "hi" in out
+    assert exit_code == 0
     assert captured["argv"][:2] == ["bash", "-c"]
     assert captured["argv"][2] == "echo hi"
 
@@ -61,5 +73,6 @@ def test_execute_bash_returns_error_on_failure_under_ci(monkeypatch):
 
     monkeypatch.setattr(gv.subprocess, "run", fake_run)
 
-    out = GVisorSandboxDriver().execute_bash("false")
+    out, exit_code = GVisorSandboxDriver().execute_bash("false")
     assert "Execution error" in out and "boom" in out
+    assert exit_code == 1

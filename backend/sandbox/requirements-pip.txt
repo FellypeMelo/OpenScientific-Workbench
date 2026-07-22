@@ -1,0 +1,38 @@
+# Installed via `/opt/sandbox-env/bin/pip install -r requirements-pip.txt`
+# AFTER the conda/micromamba solve in `environment.yml` completes (see
+# `backend/Dockerfile`'s `sandbox-toolkit` stage). Packages here are either
+# not reliably present on conda-forge/bioconda, or are pure-Python with no
+# native-build risk, so pip is simpler/faster than fighting the conda solver
+# for them.
+biopandas
+biotite
+gget
+pyliftover
+lifelines
+gseapy
+scrublet
+cellxgene-census
+hyperopt
+scvelo
+deeppurpose
+pyscreener
+descriptastorus
+PyTDC
+harmony-pytorch
+tqdm
+pypdf
+googlesearch-python
+pymed
+arxiv
+scholarly
+beautifulsoup4
+requests
+cryosparc-tools
+PyMassSpec
+reportlab
+flowkit
+pykalman
+pymzml
+FlowIO
+FlowUtils
+pdbfixer

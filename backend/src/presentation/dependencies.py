@@ -134,8 +134,24 @@ def get_sandbox_driver() -> BubblewrapSandboxDriver:
 
 def get_node_executor(
     driver: BubblewrapSandboxDriver = Depends(get_sandbox_driver),
+    mcp_router: Optional[MCPRouterPort] = None,
 ) -> NodeExecutorPort:
-    return SandboxNodeExecutor(driver)
+    """Note: `mcp_router` is a PLAIN optional param, not `Depends(...)` --
+    unlike every other provider in this module, this function is only ever
+    called directly (`get_node_executor(get_sandbox_driver())` in
+    `routes/tasks.py`), never resolved through FastAPI's own DI via a route
+    parameter default. A `Depends(...)` default here would silently bind to
+    the unresolved `Depends` marker object itself on a direct call instead of
+    a real registry, so callers that want tool-call routing MUST pass
+    `get_mcp_registry()` explicitly (see `routes/tasks.py`).
+
+    `mcp_router` lets a `language: "tool"` DAG node (see
+    `infrastructure/sandbox/sandbox_node_executor.py::_simulate_tool_call`)
+    call into the SAME registered bio/DB/action-tool catalog
+    `POST /api/v1/mcp/tools/call` uses, instead of the orchestrator only ever
+    being able to generate code from scratch.
+    """
+    return SandboxNodeExecutor(driver, mcp_router=mcp_router)
 
 
 def get_credential_provider() -> Optional[VaultClient]:

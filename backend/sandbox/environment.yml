@@ -53,6 +53,7 @@ dependencies:
   - bowtie2
   - bwa
   - bedtools
+  - blast
   - diamond
   - trimmomatic
   - mafft
@@ -67,6 +68,12 @@ dependencies:
   - pyranges
   - pybedtools
   - pybigwig
+  # GATK4 + SnpEff -- `detect_and_annotate_somatic_mutations` (Mutect2 +
+  # FilterMutectCalls + functional annotation), see action_tool_catalog.md.
+  - gatk4
+  - snpeff
+  # LUMPY -- `detect_and_characterize_structural_variations`.
+  - lumpy-sv
 
   # --- Population / quantitative genetics --------------------------------
   - plink
@@ -121,6 +128,18 @@ dependencies:
   - cobra
   - python-libsbml
   - optlang
+
+  # --- Medical / cardiovascular imaging -----------------------------------
+  # `reconstruct_3d_face_from_mri`, `calculate_brain_adc_map`,
+  # `analyze_aortic_diameter_and_geometry` need NIfTI/DICOM I/O.
+  - nibabel
+  - pydicom
+
+  # --- Single-cell embeddings (heavy, CPU-only torch) ---------------------
+  # `create_scvi_embeddings_scRNA`, `create_harmony_embeddings_scRNA`.
+  - pytorch-cpu
+  - scvi-tools
+  - harmonypy
 
   # --- Anything left is installed via pip into this same env, see
   #     requirements-pip.txt (packages not reliably on conda-forge/bioconda,

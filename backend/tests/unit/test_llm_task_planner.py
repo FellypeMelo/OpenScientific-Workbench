@@ -3,6 +3,8 @@
 The ModelProviderPort is faked, so no API keys / network are needed: we assert
 that the planner turns the model's JSON answer into a valid DAGSnapshot.
 """
+import json
+
 import pytest
 
 from src.domain.entities.dag import DAGSnapshot
@@ -99,3 +101,47 @@ async def test_plan_defaults_language_and_command_when_omitted():
     node = snapshot.get_node("a")
     assert node.language == "bash"
     assert node.command == ""
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_omits_tool_language_when_no_tools_registered():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    planner = LLMTaskPlanner(model)
+
+    await planner.plan("do x")
+
+    _, system_instruction = model.prompts[0]
+    assert "No tools are currently registered" in system_instruction
+    assert "never \"tool\"" in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_lists_registered_tool_names():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    planner = LLMTaskPlanner(model, tool_names=["get_uniprot_sequence", "docking_autodock_vina"])
+
+    await planner.plan("dock this ligand")
+
+    _, system_instruction = model.prompts[0]
+    assert "get_uniprot_sequence" in system_instruction
+    assert "docking_autodock_vina" in system_instruction
+    assert '"tool"' in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_plan_parses_tool_language_node():
+    resp = (
+        '{"nodes": [{"id": "n1", "description": "fetch sequence", "dependencies": [], '
+        '"language": "tool", "command": "{\\"tool_name\\": \\"get_uniprot_sequence\\", '
+        '\\"arguments\\": {\\"accession\\": \\"P69905\\"}}"}]}'
+    )
+    planner = LLMTaskPlanner(FakeModel(resp), tool_names=["get_uniprot_sequence"])
+
+    snapshot = await planner.plan("fetch a sequence")
+
+    node = snapshot.get_node("n1")
+    assert node.language == "tool"
+    assert json.loads(node.command) == {
+        "tool_name": "get_uniprot_sequence",
+        "arguments": {"accession": "P69905"},
+    }

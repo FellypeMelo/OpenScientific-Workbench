@@ -6,12 +6,26 @@ canned `(stdout, exit_code)` tuples) -- the actual transport boundary
 purely about `SandboxNodeExecutor`'s own dispatch/reward-mapping logic, so
 faking the driver port here (not business logic) is the correct boundary.
 """
+import json
 import os
 
 import pytest
 
 from src.domain.entities.dag import DAGNode
 from src.infrastructure.sandbox.sandbox_node_executor import SandboxNodeExecutor
+
+
+class _FakeRouter:
+    def __init__(self):
+        self.calls = []
+        self.result = {"ok": True}
+        self.raise_error: Exception | None = None
+
+    async def route(self, tool_name: str, arguments: dict):
+        self.calls.append((tool_name, arguments))
+        if self.raise_error:
+            raise self.raise_error
+        return self.result
 
 
 class _FakeDriver:
@@ -147,3 +161,77 @@ async def test_driver_os_error_prunes_gracefully():
 
     assert reward == -1.0
     assert "sandbox unavailable" in node.output["error"]
+
+
+# -- "tool" language (DAG -> MCP registry wiring) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_node_routes_through_mcp_router_and_never_touches_driver():
+    driver = _FakeDriver()
+    router = _FakeRouter()
+    router.result = {"sequence": "MKV", "length": 3}
+    command = json.dumps({"tool_name": "get_uniprot_sequence", "arguments": {"accession": "P1"}})
+    node = DAGNode(id="n1", description="fetch", language="tool", command=command)
+
+    reward = await SandboxNodeExecutor(driver, mcp_router=router).simulate(node)
+
+    assert reward == 1.0
+    assert node.output == {
+        "tool_name": "get_uniprot_sequence",
+        "result": {"sequence": "MKV", "length": 3},
+    }
+    assert router.calls == [("get_uniprot_sequence", {"accession": "P1"})]
+    assert driver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_node_without_router_prunes_gracefully():
+    driver = _FakeDriver()
+    command = json.dumps({"tool_name": "get_uniprot_sequence", "arguments": {}})
+    node = DAGNode(id="n1", description="fetch", language="tool", command=command)
+
+    reward = await SandboxNodeExecutor(driver).simulate(node)
+
+    assert reward == -1.0
+    assert "No MCP router configured" in node.output["error"]
+    assert driver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_node_malformed_json_prunes_gracefully():
+    driver = _FakeDriver()
+    router = _FakeRouter()
+    node = DAGNode(id="n1", description="fetch", language="tool", command="not json")
+
+    reward = await SandboxNodeExecutor(driver, mcp_router=router).simulate(node)
+
+    assert reward == -1.0
+    assert "Malformed tool-call command" in node.output["error"]
+    assert router.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_node_missing_tool_name_key_prunes_gracefully():
+    driver = _FakeDriver()
+    router = _FakeRouter()
+    node = DAGNode(id="n1", description="fetch", language="tool", command=json.dumps({"arguments": {}}))
+
+    reward = await SandboxNodeExecutor(driver, mcp_router=router).simulate(node)
+
+    assert reward == -1.0
+    assert "Malformed tool-call command" in node.output["error"]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_propagates_router_failure_as_pruned_reward():
+    driver = _FakeDriver()
+    router = _FakeRouter()
+    router.raise_error = ValueError("get_uniprot_sequence requires 'accession'")
+    command = json.dumps({"tool_name": "get_uniprot_sequence", "arguments": {}})
+    node = DAGNode(id="n1", description="fetch", language="tool", command=command)
+
+    reward = await SandboxNodeExecutor(driver, mcp_router=router).simulate(node)
+
+    assert reward == -1.0
+    assert "requires 'accession'" in node.output["error"]

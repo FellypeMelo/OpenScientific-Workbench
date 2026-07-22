@@ -12,6 +12,32 @@
 # plus a clean copy of `src/` (application code) -- no `.venv`, no `.git`, no
 # `tests/`, no build tooling. Runs as a non-root user.
 
+# ---------------------------------------------------------------------------
+# Stage "sandbox-toolkit": builds the SEPARATE conda/micromamba environment
+# that sandboxed research scripts (python3/bash/Rscript, run inside
+# `BubblewrapSandboxDriver`'s bwrap jail -- see
+# `src/infrastructure/sandbox/bubblewrap_driver.py`) see on PATH. Deliberately
+# NOT the app's own `/opt/venv` below -- an untrusted/LLM-generated script
+# must never be able to import this app's own dependencies (DB credential
+# helpers, JWT signing code, ...) even by accident. Runs in parallel with the
+# "builder" stage (independent, no shared inputs) under BuildKit.
+#
+# Uses micromamba (a single static binary, no separate conda bootstrap image
+# needed) against `backend/sandbox/environment.yml` -- see that file's header
+# comment for why some bioconda package names there are unverified (never
+# solved/built before this stage existed). If this stage fails to solve, fix
+# the offending package name in `environment.yml`, not here.
+FROM mambaorg/micromamba:1.5-bookworm-slim AS sandbox-toolkit
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER sandbox/environment.yml /tmp/environment.yml
+RUN micromamba create -y -p /opt/sandbox-env -f /tmp/environment.yml && \
+    micromamba clean --all --yes
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER sandbox/requirements-pip.txt /tmp/requirements-pip.txt
+RUN /opt/sandbox-env/bin/pip install --no-cache-dir -r /tmp/requirements-pip.txt
+
+# ---------------------------------------------------------------------------
+
 FROM python:3.12-slim AS builder
 
 # Keep pip quiet/deterministic and prevent .pyc write races during install.
@@ -49,11 +75,20 @@ RUN groupadd --system --gid 1000 osw && \
 # replacing the earlier gVisor/runsc design (see
 # `src/infrastructure/sandbox/`). No Docker socket exposure and no second
 # privileged container needed: `bwrap` runs as a regular subprocess using
-# user namespaces. Installed here so it's on PATH in the runtime image; a
-# later phase adds the Python adapter that actually shells out to it.
+# user namespaces. Installed here so it's on PATH in the runtime image; the
+# Python adapter that actually shells out to it lives in
+# `infrastructure/sandbox/bubblewrap_driver.py`.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends bubblewrap && \
     rm -rf /var/lib/apt/lists/*
+
+# The sandbox toolkit (biopython/scanpy/RDKit/samtools/R/... -- see
+# `sandbox/environment.yml`) that sandboxed scripts actually run against.
+# `bubblewrap_driver.py::_RO_BIND_EXTRA_DIRS` binds this path read-only into
+# the bwrap jail and puts it first on the jailed PATH, so `python3`/`Rscript`/
+# CLI tools here resolve before anything under `/usr` -- this is intentional:
+# the sandbox toolkit takes precedence over any incidental system Python/R.
+COPY --from=sandbox-toolkit /opt/sandbox-env /opt/sandbox-env
 
 WORKDIR /app
 

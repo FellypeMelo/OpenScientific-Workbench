@@ -6,8 +6,19 @@ socket exposure -- `bwrap` needs no privileged container runtime at all).
 Isolation profile (see ``_bwrap_argv``):
 - read-only bind of the interpreter/system dirs the language runtime needs
   (``/usr``, ``/bin``, ``/lib``, ``/lib64``, ``/etc``) so the guest can run
-  ``python3``/``bash``/``Rscript`` at all, but cannot modify the host
-  filesystem outside its own workspace;
+  ``bash`` at all, but cannot modify the host filesystem outside its own
+  workspace;
+- read-only bind of ``/opt/sandbox-env`` (the micromamba environment built
+  from ``backend/sandbox/environment.yml`` -- see ``backend/Dockerfile``'s
+  ``sandbox-toolkit`` stage), put FIRST on the jailed ``PATH`` via
+  ``--setenv``. This is what actually provides ``python3``/``Rscript`` plus
+  every bioinformatics CLI/library inside the jail -- neither the app's own
+  ``/opt/venv`` nor the base image's ``/usr/local`` Python are bound in, so
+  without this bind ``execute_python_script``/``execute_r_script`` would fail
+  with "command not found" for every guest process;
+- read-only bind of ``settings.DATA_LAKE_ROOT`` at ``/datalake``, when that
+  directory exists on the host, for tools that read bundled reference
+  datasets (see ``backend/data_lake/MANIFEST.md``);
 - the caller's workspace directory is bound READ-ONLY at ``/workspace``
   inside the sandbox (this driver only ever needs to *read* an
   already-materialized script/data from it -- see ``execute_python_script``);
@@ -72,9 +83,16 @@ _DEFAULT_CPU_SECONDS = 30
 _DEFAULT_MEMORY_BYTES = 512 * 1024 * 1024  # 512 MiB
 _DEFAULT_TIMEOUT_SECONDS = 30
 
-# Host directories read-only bound into the sandbox so the guest's language
-# runtime (python3/bash/Rscript) can actually resolve its own binaries/libs.
+# Host directories read-only bound into the sandbox so the guest's shell
+# (bash) can resolve its own binaries/libs.
 _RO_SYSTEM_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+
+# The sandbox toolkit (biopython/scanpy/RDKit/samtools/R/... -- see
+# `backend/sandbox/environment.yml`), built by `backend/Dockerfile`'s
+# `sandbox-toolkit` stage. Bound read-only and put first on the jailed PATH
+# (see `_bwrap_argv`) -- this, not `/usr`, is what provides `python3`/
+# `Rscript` inside the jail.
+SANDBOX_TOOLKIT_DIR = "/opt/sandbox-env"
 
 
 class BubblewrapSandboxDriver:
@@ -94,6 +112,7 @@ class BubblewrapSandboxDriver:
         cpu_seconds: int = _DEFAULT_CPU_SECONDS,
         memory_bytes: int = _DEFAULT_MEMORY_BYTES,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        data_lake_root: Optional[str] = None,
     ):
         self.workspace_root = workspace_root
         self.tracer = tracer
@@ -101,6 +120,12 @@ class BubblewrapSandboxDriver:
         self.cpu_seconds = cpu_seconds
         self.memory_bytes = memory_bytes
         self.timeout_seconds = timeout_seconds
+        # Bound read-only at /datalake when set AND present on the host (see
+        # `backend/data_lake/MANIFEST.md`) -- defaults to
+        # `settings.DATA_LAKE_ROOT`, which itself defaults to unset (no bind)
+        # since the actual reference datasets are an operator-run download
+        # step (`backend/scripts/fetch_data_lake.py`), never bundled.
+        self.data_lake_root = data_lake_root if data_lake_root is not None else settings.DATA_LAKE_ROOT
 
         resolved = (runtime if runtime is not None else settings.SANDBOX_RUNTIME) or "bubblewrap"
         self.runtime = resolved.strip().lower()
@@ -185,6 +210,19 @@ class BubblewrapSandboxDriver:
         for host_dir in _RO_SYSTEM_DIRS:
             if os.path.isdir(host_dir):
                 argv += ["--ro-bind", host_dir, host_dir]
+
+        # Sandbox toolkit (python3/Rscript/samtools/RDKit/...) -- see module
+        # docstring. Bound at the same path inside the jail as on the host so
+        # no path-rewriting is needed, and put first on PATH so it always
+        # wins over any binary of the same name under /usr.
+        jailed_path = "/usr/bin:/bin"
+        if os.path.isdir(SANDBOX_TOOLKIT_DIR):
+            argv += ["--ro-bind", SANDBOX_TOOLKIT_DIR, SANDBOX_TOOLKIT_DIR]
+            jailed_path = f"{SANDBOX_TOOLKIT_DIR}/bin:{jailed_path}"
+
+        if self.data_lake_root and os.path.isdir(self.data_lake_root):
+            argv += ["--ro-bind", self.data_lake_root, "/datalake"]
+
         argv += [
             "--proc", "/proc",
             "--dev", "/dev",
@@ -196,6 +234,7 @@ class BubblewrapSandboxDriver:
             "--unshare-ipc",
             "--die-with-parent",
             "--new-session",
+            "--setenv", "PATH", jailed_path,
         ]
         if not self.allow_network:
             argv.append("--unshare-net")

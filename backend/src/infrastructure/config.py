@@ -213,6 +213,28 @@ class Settings(BaseSettings):
     # `SKILLS_ROOT` env var once real scientific Skill content is authored.
     SKILLS_ROOT: str = str(_REPO_ROOT / "skills")
 
+    # --- Data lake (Biomni-E1-style bundled reference datasets) ---
+    # Where THIS CONTAINER (not the host) sees the data lake -- must match
+    # `docker-compose.yml`'s `./data_lake:/datalake:ro` bind mount target on
+    # the `backend`/`worker` services. Deliberately a fixed absolute
+    # container path rather than `_REPO_ROOT`-derived (unlike `SKILLS_ROOT`
+    # above): `_REPO_ROOT` resolves to `/` inside this image (see that
+    # constant's definition), which would silently produce `/data_lake`
+    # (underscore) here -- a one-character mismatch against the `/datalake`
+    # bind target that would make `BubblewrapSandboxDriver` never find it.
+    # `BubblewrapSandboxDriver` binds this read-only into the bwrap jail
+    # (also at `/datalake`) for action tools that read a bundled reference
+    # table (gene sets, PPI networks, GWAS catalog, ...). See
+    # `backend/data_lake/MANIFEST.md` for the full list and
+    # `backend/scripts/fetch_data_lake.py` for how to populate it -- the
+    # actual dataset files are NOT bundled in the image (several are
+    # multi-GB and/or gated behind a registration/license click-through),
+    # only this directory convention + the fetch script are shipped. A tool
+    # whose required file is missing here must fail loud with a message
+    # pointing at `fetch_data_lake.py`, never silently treat an absent
+    # dataset as an empty-but-valid result.
+    DATA_LAKE_ROOT: str = "/datalake"
+
     # --- CORS (Fase 5 - frontend gap closure) ---
     # The Next.js frontend (`frontend/`) runs on its own origin (`next dev`
     # defaults to `http://localhost:3000`), distinct from this API's origin --

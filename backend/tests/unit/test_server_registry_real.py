@@ -55,3 +55,39 @@ def test_register_server_stores_handler_in_registry():
 
     registry.register_server("my_tool", handler)
     assert registry.registry["my_tool"] is handler
+
+
+@pytest.mark.asyncio
+async def test_route_json_encodes_dict_results_instead_of_python_repr():
+    """A handler returning a dict (every action-tool handler does) must come
+    back as real JSON (double-quoted), not `str(dict)`'s single-quoted repr
+    -- the latter is not valid JSON and unparseable by any consumer."""
+    registry = MCPServerRegistry()
+    registry.register_server("get_thing", lambda arguments: {"a": 1, "b": "two"})
+
+    result = await registry.route("get_thing", {})
+
+    assert result == '{"a": 1, "b": "two"}'
+    import json
+    assert json.loads(result) == {"a": 1, "b": "two"}
+
+
+@pytest.mark.asyncio
+async def test_route_json_encodes_list_results():
+    registry = MCPServerRegistry()
+    registry.register_server("get_list", lambda arguments: [{"id": 1}, {"id": 2}])
+
+    result = await registry.route("get_list", {})
+
+    import json
+    assert json.loads(result) == [{"id": 1}, {"id": 2}]
+
+
+@pytest.mark.asyncio
+async def test_route_keeps_plain_str_coercion_for_non_dict_list_results():
+    registry = MCPServerRegistry()
+    registry.register_server("get_number", lambda arguments: 42)
+
+    result = await registry.route("get_number", {})
+
+    assert result == "42"

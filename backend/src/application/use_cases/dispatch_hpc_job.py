@@ -1,7 +1,6 @@
 import logging
 from uuid import UUID
 
-from src.domain.entities.agent_session import AgentSession
 from src.domain.ports.session_repository import SessionRepositoryPort
 from src.domain.ports.hpc_job_dispatcher import HPCJobDispatcherPort
 from src.domain.ports.vram_checker import VRAMCheckerPort

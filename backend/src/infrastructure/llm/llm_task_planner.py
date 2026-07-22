@@ -8,7 +8,6 @@ heavier ``pydantic-ai`` runtime -- same outcome (NL -> typed DAG), fewer moving
 parts (KISS). The domain orchestrator depends only on the port, so this choice
 is invisible to it.
 """
-from typing import Dict, List
 
 from src.domain.entities.dag import DAGNode, DAGSnapshot
 from src.domain.ports.model_provider import ModelProviderPort

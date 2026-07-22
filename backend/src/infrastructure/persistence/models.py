@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, Boolean, ForeignKey, DateTime, Integer, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base
 import uuid
 import datetime
 

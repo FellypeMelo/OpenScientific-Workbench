@@ -11,7 +11,7 @@ from src.infrastructure.telemetry import setup_telemetry
 from src.presentation.middleware.jwt_auth import JWTAuthMiddleware
 from src.presentation.middleware.rate_limit import RateLimitMiddleware
 from src.presentation.middleware.security_headers import SecurityHeadersMiddleware
-from src.presentation.dependencies import close_graph_store, close_vector_store
+from src.presentation.dependencies import close_graph_store, close_tool_catalog_index, close_vector_store
 from src.presentation.routes.sessions import router as sessions_router
 from src.presentation.routes.chat import router as chat_router
 from src.presentation.routes.tasks import router as tasks_router
@@ -86,6 +86,7 @@ async def lifespan(app: FastAPI):
     # `AsyncGraphDatabase` driver leaks its connection pool on process exit
     # without this.
     await close_vector_store()
+    await close_tool_catalog_index()
     await close_graph_store()
     await engine.dispose()
 

@@ -128,6 +128,114 @@ async def test_system_instruction_lists_registered_tool_names():
     assert '"tool"' in system_instruction
 
 
+class FakeToolIndex:
+    """`ToolCatalogIndex`-shaped double for retrieval tests below -- no real
+    Qdrant/embedding involved, see `test_tool_catalog_index.py` for that."""
+
+    def __init__(self, usable=True, results=None):
+        self._usable = usable
+        self._results = results or []
+        self.queries: list[tuple[str, int]] = []
+
+    @property
+    def usable(self):
+        return self._usable
+
+    async def top_k(self, task_nl, k):
+        self.queries.append((task_nl, k))
+        return self._results
+
+
+def _many_tool_names(n):
+    return [f"tool_{i}" for i in range(n)]
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_full_dump_below_retrieval_threshold_even_with_usable_index():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    index = FakeToolIndex(usable=True, results=[("tool_1", "desc")])
+    planner = LLMTaskPlanner(model, tool_names=_many_tool_names(5), tool_index=index)
+
+    await planner.plan("do x")
+
+    assert index.queries == []  # never consulted -- small catalog, full dump is fine
+    _, system_instruction = model.prompts[0]
+    assert "Registered tools you may call:" in system_instruction
+    assert "tool_1" in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_uses_retrieval_above_threshold_when_index_usable():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    tool_names = _many_tool_names(40)
+    index = FakeToolIndex(
+        usable=True,
+        results=[("tool_3", "does the thing"), ("tool_7", "does another thing")],
+    )
+    planner = LLMTaskPlanner(model, tool_names=tool_names, tool_index=index)
+
+    await planner.plan("dock this ligand")
+
+    assert index.queries == [("dock this ligand", 12)]
+    _, system_instruction = model.prompts[0]
+    assert "40 tools are registered in total" in system_instruction
+    assert "tool_3 — does the thing" in system_instruction
+    assert "tool_7 — does another thing" in system_instruction
+    # The full 40-name dump must NOT also be present -- retrieval replaces it.
+    assert "Registered tools you may call:" not in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_falls_back_to_full_dump_when_index_not_usable():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    tool_names = _many_tool_names(40)
+    index = FakeToolIndex(usable=False, results=[("tool_3", "irrelevant, unusable")])
+    planner = LLMTaskPlanner(model, tool_names=tool_names, tool_index=index)
+
+    await planner.plan("dock this ligand")
+
+    assert index.queries == []
+    _, system_instruction = model.prompts[0]
+    assert "Registered tools you may call:" in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_falls_back_to_full_dump_when_retrieval_returns_nothing_usable():
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    tool_names = _many_tool_names(40)
+    # Retrieval only returns names that are NOT in the registered set (stale
+    # index) -- must be filtered out entirely, then fall back cleanly.
+    index = FakeToolIndex(usable=True, results=[("renamed_or_removed_tool", "stale")])
+    planner = LLMTaskPlanner(model, tool_names=tool_names, tool_index=index)
+
+    await planner.plan("dock this ligand")
+
+    _, system_instruction = model.prompts[0]
+    assert "renamed_or_removed_tool" not in system_instruction
+    assert "Registered tools you may call:" in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_system_instruction_falls_back_to_full_dump_when_retrieval_raises():
+    """`usable=True` only means "configured to try" -- a real connection
+    failure (e.g. Qdrant unreachable) must degrade to the full dump, not
+    propagate out of `plan()` and abort the whole task submission."""
+
+    class RaisingToolIndex(FakeToolIndex):
+        async def top_k(self, task_nl, k):
+            raise ConnectionError("qdrant unreachable")
+
+    model = FakeModel('{"nodes": [{"id": "a", "description": "x", "dependencies": []}]}')
+    tool_names = _many_tool_names(40)
+    planner = LLMTaskPlanner(model, tool_names=tool_names, tool_index=RaisingToolIndex())
+
+    snapshot = await planner.plan("dock this ligand")
+
+    assert len(snapshot.nodes) == 1  # plan() completed instead of raising
+    _, system_instruction = model.prompts[0]
+    assert "Registered tools you may call:" in system_instruction
+
+
 @pytest.mark.asyncio
 async def test_plan_parses_tool_language_node():
     resp = (

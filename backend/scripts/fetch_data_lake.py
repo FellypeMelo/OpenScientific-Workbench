@@ -20,6 +20,7 @@ import gzip
 import shutil
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -42,9 +43,14 @@ _AUTO_DOWNLOADS = [
         None,
     ),
     (
+        # EBI dropped the old `/gwas/api/search/downloads/alternative` REST
+        # endpoint (404 as of 2026-07) in favor of static FTP release
+        # archives -- see https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/.
+        # `_ontology-annotated-full.zip` is the closest match to the old
+        # "alternative" (ontology-mapped) full-associations download.
         "gwas_catalog.tsv",
-        "https://www.ebi.ac.uk/gwas/api/search/downloads/alternative",
-        None,
+        "https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/gwas-catalog-associations_ontology-annotated-full.zip",
+        "zip",
     ),
     (
         "variant_table.csv",
@@ -83,6 +89,19 @@ def _download(url: str, dest: Path, *, decompress: Optional[str]) -> None:
     if decompress == "gzip":
         with gzip.open(tmp_path, "rb") as gz_in, open(dest, "wb") as out:
             shutil.copyfileobj(gz_in, out)
+        tmp_path.unlink()
+    elif decompress == "zip":
+        with zipfile.ZipFile(tmp_path) as archive:
+            members = [n for n in archive.namelist() if not n.endswith("/")]
+            if not members:
+                raise ValueError(f"{url} produced an empty zip archive")
+            # These releases ship exactly one data file per archive; picking
+            # the largest member is a defensive tie-breaker, not a real
+            # ambiguity, in case a future release adds a small README/manifest
+            # alongside it.
+            member = max(members, key=lambda n: archive.getinfo(n).file_size)
+            with archive.open(member) as zip_in, open(dest, "wb") as out:
+                shutil.copyfileobj(zip_in, out)
         tmp_path.unlink()
     else:
         tmp_path.rename(dest)

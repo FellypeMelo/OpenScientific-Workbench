@@ -13,10 +13,10 @@ cannot, without violating the source's terms) automate that step.
 
 | File | Source | Access | Notes |
 |---|---|---|---|
-| `proteinatlas.tsv` | [Human Protein Atlas](https://www.proteinatlas.org/about/download) | auto (direct download, CC BY-SA) | Protein expression across tissues. |
+| `proteinatlas.tsv` | [Human Protein Atlas](https://www.proteinatlas.org/about/download) | manual (zip archive behind a versioned link; download `proteinatlas.tsv.zip` and extract) | Protein expression across tissues. |
 | `gene_info.csv` | [NCBI Gene](https://ftp.ncbi.nlm.nih.gov/gene/DATA/) (`Homo_sapiens.gene_info.gz`) | auto (direct download, public domain) | Comprehensive gene metadata. |
 | `go-plus.json` | [Gene Ontology](https://geneontology.org/docs/download-ontology/) (`go-plus.json`, OBO Foundry) | auto (direct download, CC BY 4.0) | GO term graph for functional annotation. |
-| `gwas_catalog.tsv` | [NHGRI-EBI GWAS Catalog](https://www.ebi.ac.uk/gwas/docs/file-downloads) (`alternative` download endpoint) | auto (direct download, public domain-equivalent) | GWAS associations. Saved as `.tsv` (not `.pkl` as in the original Biomni catalog) — load with `pandas.read_csv(sep="\t")`; no pickling step needed or attempted. |
+| `gwas_catalog.tsv` | [NHGRI-EBI GWAS Catalog](https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/) (`gwas-catalog-associations_ontology-annotated-full.zip`, extracted) | auto (direct download, public domain-equivalent) | GWAS associations. Saved as `.tsv` (not `.pkl` as in the original Biomni catalog) — load with `pandas.read_csv(sep="\t")`; no pickling step needed or attempted. |
 | `gtex_tissue_gene_tpm.csv` | [GTEx Portal](https://gtexportal.org/home/downloads/adult-gtex/bulk_tissue_expression) | manual (free registration required for some files) | Tissue-level TPM. |
 | `msigdb_human_*_geneset.csv` (10 files: c1-c8, h, plus the GTRD subset) | [MSigDB](https://www.gsea-msigdb.org/gsea/msigdb) | manual (free registration required) | Curated/ontology/hallmark/oncogenic/immunologic/celltype gene sets. |
 | `mousemine_*_geneset.csv` (6 files) | [MouseMine](http://www.mousemine.org/mousemine/begin.do) | manual (query/export UI, no single stable static URL) | Mouse gene-set analogues of the MSigDB collections. |

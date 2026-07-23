@@ -128,6 +128,69 @@ async def test_query_clinvar_variation_id_normalizes_vcv_accession_and_fetches_d
 
 
 @pytest.mark.asyncio
+async def test_query_clinvar_variation_id_strips_version_suffix():
+    """'VCV000017661.2' is the exact form ClinVar's own site displays for
+    every variant -- the trailing '.2' version must be stripped too, not
+    just the 'VCV' prefix and leading zeros, or the id sent to NCBI eutils
+    (which expects a plain integer UID) is malformed."""
+    captured = {}
+
+    def handler(request):
+        assert "esummary.fcgi" in str(request.url)
+        captured["ids"] = request.url.params["id"]
+        return httpx.Response(
+            200,
+            json={"result": {"uids": ["17661"], "17661": {"uid": "17661", "accession": "VCV000017661.2"}}},
+        )
+
+    client = _client(handler)
+    adapters = VariantClinicalAdapters(client)
+
+    result = await adapters.query_clinvar({"variation_id": "VCV000017661.2"})
+
+    assert captured["ids"] == "17661"
+    assert result["variants"][0]["accession"] == "VCV000017661.2"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_clinvar_and_query_dbsnp_merge_configured_ncbi_credentials(monkeypatch):
+    import src.infrastructure.mcp.variant_clinical_db_adapters as variant_module
+
+    monkeypatch.setattr(variant_module.settings, "NCBI_EMAIL", "researcher@example.com")
+    monkeypatch.setattr(variant_module.settings, "NCBI_API_KEY", "secret-key")
+    captured = []
+
+    def handler(request):
+        captured.append(dict(request.url.params))
+        if "esearch.fcgi" in str(request.url):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["1"]}})
+        return httpx.Response(200, json={"result": {"uids": ["1"], "1": {"uid": "1"}}})
+
+    client = _client(handler)
+    adapters = VariantClinicalAdapters(client)
+
+    await adapters.query_clinvar({"gene": "BRCA1"})
+    for params in captured:
+        assert params["email"] == "researcher@example.com"
+        assert params["api_key"] == "secret-key"
+    await client.aclose()
+
+    captured.clear()
+
+    def dbsnp_handler(request):
+        captured.append(dict(request.url.params))
+        return httpx.Response(200, json={"result": {"uids": ["1042522"], "1042522": {"uid": "1042522"}}})
+
+    client = _client(dbsnp_handler)
+    adapters = VariantClinicalAdapters(client)
+    await adapters.query_dbsnp({"rsid": "rs1042522"})
+    assert captured[0]["email"] == "researcher@example.com"
+    assert captured[0]["api_key"] == "secret-key"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_query_clinvar_missing_args_raises_value_error():
     adapters = VariantClinicalAdapters(_client(lambda r: httpx.Response(200, json={})))
 

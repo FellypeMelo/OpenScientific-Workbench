@@ -20,6 +20,14 @@ def _client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+# Stand-in DNS resolver returning a fixed, real public IP -- injected into
+# every extract_url_content/extract_pdf_content(url=...) test below so none
+# of them perform a real DNS lookup (this file's own "zero real network
+# calls" convention), while still exercising the real SSRF-guard code path.
+def _public_resolver(hostname):
+    return ["93.184.216.34"]
+
+
 # --- fetch_supplementary_info_from_doi -------------------------------------
 
 
@@ -480,7 +488,7 @@ async def test_extract_url_content_success_strips_scripts_and_returns_text():
         return httpx.Response(200, text=html)
 
     client = _client(handler)
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     result = await adapters.extract_url_content({"url": "https://example.com/page"})
 
@@ -508,7 +516,7 @@ async def test_extract_url_content_missing_url_raises_value_error():
 @pytest.mark.asyncio
 async def test_extract_url_content_404_raises_literature_api_error():
     client = _client(lambda r: httpx.Response(404, text="not found"))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(LiteratureAPIError, match="404"):
         await adapters.extract_url_content({"url": "https://example.com/missing"})
@@ -518,7 +526,7 @@ async def test_extract_url_content_404_raises_literature_api_error():
 @pytest.mark.asyncio
 async def test_extract_url_content_upstream_500_raises_http_error():
     client = _client(lambda r: httpx.Response(500, text="server error"))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(httpx.HTTPStatusError):
         await adapters.extract_url_content({"url": "https://example.com/x"})
@@ -528,11 +536,97 @@ async def test_extract_url_content_upstream_500_raises_http_error():
 @pytest.mark.asyncio
 async def test_extract_url_content_empty_body_raises_literature_api_error():
     client = _client(lambda r: httpx.Response(200, text="   "))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(LiteratureAPIError, match="empty response body"):
         await adapters.extract_url_content({"url": "https://example.com/x"})
     await client.aclose()
+
+
+# --- extract_url_content / extract_pdf_content SSRF guard ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_blocks_non_http_scheme():
+    adapters = LiteratureAdapters(_client(lambda r: httpx.Response(200, text="x")))
+
+    with pytest.raises(ValueError, match="must be an http"):
+        await adapters.extract_url_content({"url": "file:///etc/passwd"})
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_blocks_loopback_ip_literal():
+    adapters = LiteratureAdapters(_client(lambda r: httpx.Response(200, text="x")))
+
+    with pytest.raises(ValueError, match="non-public address"):
+        await adapters.extract_url_content({"url": "http://127.0.0.1:8000/admin"})
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_blocks_cloud_metadata_link_local_ip():
+    adapters = LiteratureAdapters(_client(lambda r: httpx.Response(200, text="x")))
+
+    with pytest.raises(ValueError, match="non-public address"):
+        await adapters.extract_url_content(
+            {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_blocks_hostname_that_resolves_to_private_ip():
+    """DNS-rebinding case: a public-looking hostname whose resolver returns a
+    private address must still be blocked, not just an IP-literal URL."""
+    adapters = LiteratureAdapters(
+        _client(lambda r: httpx.Response(200, text="x")),
+        resolve_addresses=lambda hostname: ["10.0.0.5"],
+    )
+
+    with pytest.raises(ValueError, match="non-public address"):
+        await adapters.extract_url_content({"url": "http://internal.example.test/"})
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_dns_resolution_failure_raises_value_error():
+    def _fail(hostname):
+        raise ValueError(f"Could not resolve host '{hostname}'.")
+
+    adapters = LiteratureAdapters(
+        _client(lambda r: httpx.Response(200, text="x")), resolve_addresses=_fail
+    )
+
+    with pytest.raises(ValueError, match="Could not resolve host"):
+        await adapters.extract_url_content({"url": "http://this-does-not-resolve.invalid/"})
+
+
+@pytest.mark.asyncio
+async def test_extract_url_content_allows_public_address():
+    called = {"count": 0}
+
+    def handler(request):
+        called["count"] += 1
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    adapters = LiteratureAdapters(_client(handler), resolve_addresses=_public_resolver)
+
+    result = await adapters.extract_url_content({"url": "https://example.com/page"})
+
+    assert called["count"] == 1
+    assert "ok" in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_extract_pdf_content_blocks_private_ip_before_fetching():
+    called = {"count": 0}
+
+    def handler(request):
+        called["count"] += 1
+        return httpx.Response(200, content=b"")
+
+    adapters = LiteratureAdapters(_client(handler))
+
+    with pytest.raises(ValueError, match="non-public address"):
+        await adapters.extract_pdf_content({"url": "http://192.168.1.1/paper.pdf"})
+    assert called["count"] == 0
 
 
 # --- extract_pdf_content -------------------------------------------------------------
@@ -556,7 +650,7 @@ def _minimal_pdf_bytes() -> bytes:
 @pytest.mark.asyncio
 async def test_extract_pdf_content_from_url_no_text_layer_raises_literature_api_error():
     client = _client(lambda r: httpx.Response(200, content=_minimal_pdf_bytes()))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(LiteratureAPIError, match="No extractable text layer"):
         await adapters.extract_pdf_content({"url": "https://example.com/paper.pdf"})
@@ -577,7 +671,7 @@ async def test_extract_pdf_content_missing_args_raises_value_error():
 @pytest.mark.asyncio
 async def test_extract_pdf_content_404_raises_literature_api_error():
     client = _client(lambda r: httpx.Response(404, text="not found"))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(LiteratureAPIError, match="was not found"):
         await adapters.extract_pdf_content({"url": "https://example.com/missing.pdf"})
@@ -587,7 +681,7 @@ async def test_extract_pdf_content_404_raises_literature_api_error():
 @pytest.mark.asyncio
 async def test_extract_pdf_content_upstream_500_raises_http_error():
     client = _client(lambda r: httpx.Response(500, text="server error"))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(httpx.HTTPStatusError):
         await adapters.extract_pdf_content({"url": "https://example.com/paper.pdf"})
@@ -597,7 +691,7 @@ async def test_extract_pdf_content_upstream_500_raises_http_error():
 @pytest.mark.asyncio
 async def test_extract_pdf_content_invalid_pdf_bytes_raises_literature_api_error():
     client = _client(lambda r: httpx.Response(200, content=b"not a pdf at all"))
-    adapters = LiteratureAdapters(client)
+    adapters = LiteratureAdapters(client, resolve_addresses=_public_resolver)
 
     with pytest.raises(LiteratureAPIError, match="not a valid, readable PDF"):
         await adapters.extract_pdf_content({"url": "https://example.com/paper.pdf"})

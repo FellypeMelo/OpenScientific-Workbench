@@ -23,7 +23,7 @@ def test_factory_raises_value_error_if_key_missing():
 
 def test_factory_returns_correct_client_class():
     os.environ["DEEPSEEK_API_KEY"] = "test-key"
-    os.environ["ZHIPU_GLM_API_KEY"] = "test-key"
+    os.environ["GLM_API_KEY"] = "test-key"
     os.environ["ANTHROPIC_API_KEY"] = "test-key"
     os.environ["OPENAI_API_KEY"] = "test-key"
 
@@ -38,6 +38,26 @@ def test_factory_returns_correct_client_class():
 
     client = ModelClientFactory.get_client("openai")
     assert isinstance(client, OpenAIClient)
+
+
+def test_glm_reads_glm_api_key_not_zhipu_prefixed_name():
+    """Regression test: config.py's Settings.GLM_API_KEY, .env.example, and
+    docker-compose.yml's x-backend-env anchor all name this credential
+    GLM_API_KEY -- ModelClientFactory must consult that same name, not a
+    ZHIPU_GLM_API_KEY the rest of the stack never sets."""
+    old_key = os.environ.pop("GLM_API_KEY", None)
+    os.environ.pop("ZHIPU_GLM_API_KEY", None)
+    try:
+        with pytest.raises(ValueError, match="Missing GLM_API_KEY"):
+            ModelClientFactory.get_client("glm")
+
+        os.environ["ZHIPU_GLM_API_KEY"] = "wrong-name-should-not-be-used"
+        with pytest.raises(ValueError, match="Missing GLM_API_KEY"):
+            ModelClientFactory.get_client("glm")
+    finally:
+        os.environ.pop("ZHIPU_GLM_API_KEY", None)
+        if old_key:
+            os.environ["GLM_API_KEY"] = old_key
 
 
 # --- generate_stream() tests --------------------------------------------------

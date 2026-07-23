@@ -36,6 +36,15 @@ Design deviations from the generic Fase 2 guidance, and why
   ``DEEPSEEK_API_KEY``. Nothing is ever hardcoded -- an unset value simply
   means "no credential configured" (each tool degrades or raises a clear
   error, never fakes a key).
+- ``extract_url_content``/``extract_pdf_content`` (URL branch): unlike every
+  other tool here, these two fetch a fully caller-supplied URL rather than a
+  fixed base URL -- an SSRF risk if left unguarded (an LLM-driven DAG node,
+  or content it blindly forwards, could point either tool at
+  ``169.254.169.254``/``localhost``/an internal service). ``LiteratureAdapters.
+  _ensure_public_http_url`` resolves the hostname and rejects private/
+  loopback/link-local/reserved/multicast targets before ever issuing the
+  request. The resolver is injectable (``resolve_addresses=`` on
+  ``__init__``) so tests never perform a real DNS lookup.
 - ``query_scholar``: Google Scholar itself has no public API, and scraping
   its results HTML is both fragile and against Google's Terms of Service
   (the same reason ``search_google`` below uses the real Google Custom
@@ -50,7 +59,10 @@ Design deviations from the generic Fase 2 guidance, and why
 """
 import asyncio
 import io
-from typing import Any, Dict, List, Optional
+import ipaddress
+import socket
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -104,6 +116,18 @@ def _text(element: Optional[ElementTree.Element]) -> Optional[str]:
     return element.text.strip() or None
 
 
+def _default_resolve_addresses(hostname: str) -> List[str]:
+    """Real DNS resolution, run off the event loop (see
+    `LiteratureAdapters._ensure_public_http_url`). Injectable so tests never
+    perform a real DNS lookup (matching this file's own "zero real network
+    calls" test convention -- see this module's docstring)."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve host '{hostname}'.") from exc
+    return [info[4][0] for info in infos]
+
+
 class LiteratureAdapters:
     """Thin async wrapper around real public literature/search REST APIs.
 
@@ -112,8 +136,16 @@ class LiteratureAdapters:
     is created per call, so callers never have to manage a client lifecycle.
     """
 
-    def __init__(self, client: Optional[httpx.AsyncClient] = None):
+    def __init__(
+        self,
+        client: Optional[httpx.AsyncClient] = None,
+        resolve_addresses: Optional[Callable[[str], List[str]]] = None,
+    ):
         self._client = client
+        # See `_ensure_public_http_url` -- only used by `extract_url_content`/
+        # `extract_pdf_content`'s URL branch, the two tools in this file that
+        # fetch a fully caller-supplied URL rather than a fixed base URL.
+        self._resolve_addresses = resolve_addresses or _default_resolve_addresses
 
     async def _get(
         self,
@@ -126,6 +158,40 @@ class LiteratureAdapters:
             return await self._client.get(url, params=params, headers=headers)
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
             return await client.get(url, params=params, headers=headers)
+
+    async def _ensure_public_http_url(self, url: str) -> None:
+        """SSRF guard for `extract_url_content`/`extract_pdf_content`: unlike
+        every other tool in this file (which only ever GETs a fixed,
+        hardcoded base URL with a validated identifier spliced in), these two
+        accept an arbitrary caller-supplied URL as the actual request target
+        -- reachable from an LLM-driven DAG node, including via content the
+        agent itself fetched and is now blindly forwarding (e.g. a
+        prompt-injected URL inside a paper). Resolves the hostname (not just
+        string-matching it) so a public-looking hostname that DNS-rebinds to
+        a private/loopback/link-local/cloud-metadata address is still
+        blocked, not just an IP-literal one."""
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(f"'{url}' must be an http(s) URL.")
+        hostname = parts.hostname
+        if not hostname:
+            raise ValueError(f"'{url}' has no host to fetch.")
+
+        addresses = await asyncio.to_thread(self._resolve_addresses, hostname)
+        for address in addresses:
+            ip = ipaddress.ip_address(address)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                raise ValueError(
+                    f"'{url}' resolves to a non-public address ({address}); fetching "
+                    "internal/private network targets is not allowed."
+                )
 
     # --- fetch_supplementary_info_from_doi ---------------------------------
 
@@ -439,6 +505,7 @@ class LiteratureAdapters:
         if not url or not str(url).strip():
             raise ValueError("extract_url_content requires a non-empty 'url' argument.")
         url = str(url).strip()
+        await self._ensure_public_http_url(url)
 
         response = await self._get(url, headers={"User-Agent": DEFAULT_USER_AGENT})
         if response.status_code == 404:
@@ -491,6 +558,7 @@ class LiteratureAdapters:
             source = "inline"
         else:
             url = str(url).strip()
+            await self._ensure_public_http_url(url)
             response = await self._get(url)
             if response.status_code == 404:
                 raise LiteratureAPIError(f"PDF at '{url}' was not found.")

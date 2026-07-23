@@ -43,15 +43,14 @@ module, not guessed from memory of possibly-stale documentation):
 
 Contact email / API key: several NCBI E-utilities endpoints (ClinVar, dbSNP)
 work better (higher, documented rate limits) with an ``email``/``api_key``
-query param, and this task's Settings-field guidance suggests wiring one up.
-That change belongs in ``src/infrastructure/config.py``, which is out of
-scope for this module per this task's file boundaries (only this adapter
-file and its test file). These two tools therefore currently call NCBI
-unauthenticated -- a real, documented gap, not a secret one; a future pass
-that *does* own ``config.py`` should add an ``Optional[str] = None``
-``NCBI_ENTREZ_EMAIL`` (and optionally ``NCBI_API_KEY``) setting following the
-``DEEPSEEK_API_KEY`` convention there and thread it through as an extra
-query param on the ``NCBI_ESUMMARY_URL``/``CLINVAR_ESEARCH_URL`` calls below.
+query param. ``settings.NCBI_EMAIL``/``settings.NCBI_API_KEY`` (the same
+fields ``expression_browser_db_adapters.py``'s ``query_geo`` and
+``literature_adapters.py``'s ``query_pubmed`` already consume, all sharing
+one NCBI Entrez identity) are merged onto every ``query_clinvar``/
+``query_dbsnp`` E-utilities call via ``_entrez_params`` below -- both remain
+optional courtesy params NCBI documents, never required for a request to
+succeed, so an unset value just means "call unauthenticated" rather than an
+error.
 
 Retry/backoff: no shared retry helper exists anywhere else in this codebase
 yet (a real, confirmed gap -- see ``docs/tools/db_adapter_catalog.md``). This
@@ -70,6 +69,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from src.infrastructure.config import settings
 from src.infrastructure.mcp.server_registry import MCPServerRegistry
 
 logger = logging.getLogger(__name__)
@@ -175,6 +175,18 @@ class VariantClinicalAdapters:
     async def _get(self, url: str, *, params: Optional[Dict[str, Any]] = None) -> httpx.Response:
         return await self._send(lambda client: client.get(url, params=params))
 
+    def _entrez_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Adds the configured NCBI contact email/API key (if any) to an
+        eutils request -- both are optional courtesy/rate-limit params NCBI
+        documents, never required for a request to succeed (see module
+        docstring)."""
+        merged = dict(params)
+        if settings.NCBI_EMAIL:
+            merged["email"] = settings.NCBI_EMAIL
+        if settings.NCBI_API_KEY:
+            merged["api_key"] = settings.NCBI_API_KEY
+        return merged
+
     async def _post_graphql(
         self, url: str, query: str, variables: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -231,7 +243,10 @@ class VariantClinicalAdapters:
         if variation_id:
             numeric_id = variation_id
             if numeric_id.upper().startswith("VCV"):
-                numeric_id = numeric_id[3:].lstrip("0") or "0"
+                # Strip a trailing version suffix too (e.g. "VCV000017661.2",
+                # the form ClinVar's own site displays for every variant) --
+                # NCBI eutils UIDs are plain integers, ".2" is not part of it.
+                numeric_id = numeric_id[3:].split(".", 1)[0].lstrip("0") or "0"
             ids = [numeric_id]
             query_desc: Dict[str, Any] = {"variation_id": variation_id}
         else:
@@ -241,7 +256,9 @@ class VariantClinicalAdapters:
                 term += f" AND {str(args['clinical_significance']).strip()}[Clinical_significance]"
             search_response = await self._get(
                 CLINVAR_ESEARCH_URL,
-                params={"db": "clinvar", "term": term, "retmode": "json", "retmax": max_results},
+                params=self._entrez_params(
+                    {"db": "clinvar", "term": term, "retmode": "json", "retmax": max_results}
+                ),
             )
             search_response.raise_for_status()
             try:
@@ -257,7 +274,8 @@ class VariantClinicalAdapters:
                 return {"query": query_desc, "total_count": 0, "variants": []}
 
         summary_response = await self._get(
-            NCBI_ESUMMARY_URL, params={"db": "clinvar", "id": ",".join(ids), "retmode": "json"}
+            NCBI_ESUMMARY_URL,
+            params=self._entrez_params({"db": "clinvar", "id": ",".join(ids), "retmode": "json"}),
         )
         summary_response.raise_for_status()
         try:
@@ -315,7 +333,9 @@ class VariantClinicalAdapters:
         if not numeric_id.isdigit():
             raise ValueError(f"query_dbsnp requires a numeric rsID (e.g. 'rs1042522'); got '{rsid}'.")
 
-        response = await self._get(NCBI_ESUMMARY_URL, params={"db": "snp", "id": numeric_id, "retmode": "json"})
+        response = await self._get(
+            NCBI_ESUMMARY_URL, params=self._entrez_params({"db": "snp", "id": numeric_id, "retmode": "json"})
+        )
         response.raise_for_status()
         try:
             data = response.json()

@@ -16,6 +16,7 @@ The driver is duck-typed (any object exposing ``execute_python_script``/
 ``GVisorSandboxDriver`` (dormant alternative), see
 ``infrastructure/sandbox/bubblewrap_driver.py``.
 """
+import asyncio
 import json
 import logging
 import os
@@ -81,13 +82,22 @@ class SandboxNodeExecutor:
             return await self._simulate_tool_call(node, command)
 
         try:
+            # Every `execute_*` call below runs a real, blocking
+            # `subprocess.run` (up to `driver.timeout_seconds`, 30s by
+            # default) -- offloaded to a worker thread so a slow/near-timeout
+            # sandboxed script doesn't stall this process's single asyncio
+            # event loop (and every other concurrent request on it) for the
+            # duration. `simulate()` itself is `async def`, so a plain
+            # synchronous call here would do exactly that.
             if language == "python":
                 script_path = self._materialize_python_script(node, command)
-                stdout, exit_code = self.driver.execute_python_script(script_path)
+                stdout, exit_code = await asyncio.to_thread(
+                    self.driver.execute_python_script, script_path
+                )
             elif language == "r":
-                stdout, exit_code = self.driver.execute_r_script(command)
+                stdout, exit_code = await asyncio.to_thread(self.driver.execute_r_script, command)
             else:  # "bash"
-                stdout, exit_code = self.driver.execute_bash(command)
+                stdout, exit_code = await asyncio.to_thread(self.driver.execute_bash, command)
         except (PermissionError, OSError) as exc:
             # A driver-side security violation (path traversal) or genuine
             # transport failure fails this node's simulation -- the

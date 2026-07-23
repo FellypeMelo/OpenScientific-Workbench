@@ -30,6 +30,7 @@ from src.infrastructure.graph.neo4j_client import Neo4jGraphClient
 from src.infrastructure.hpc.local_job_dispatcher import LocalJobDispatcher
 from src.infrastructure.hpc.nvidia_vram_checker import NvidiaVRAMChecker
 from src.infrastructure.hpc.slurm_dispatcher import SlurmSSHDispatcher
+from src.infrastructure.llm.tool_catalog_index import ToolCatalogIndex
 from src.infrastructure.mcp.bio_direct_adapters import register_direct_bio_tools
 from src.infrastructure.mcp.expression_browser_db_adapters import register_expression_browser_db_tools
 from src.infrastructure.mcp.literature_adapters import register_literature_tools
@@ -253,12 +254,12 @@ def get_mcp_registry() -> MCPRouterPort:
       calls, see `infrastructure/mcp/bio_direct_adapters.py`) plus the 7
       domain-grouped DB/network adapter modules (structure, pathway/
       regulatory, variant/clinical, expression-browser, proteomics/pharma,
-      taxonomy, literature/search -- ~37 tools total) are ALWAYS registered:
+      taxonomy, literature/search -- 41 tools total) are ALWAYS registered:
       every one of them is either free/unauthenticated or degrades to a
       clear call-time error when an optional credential (see each module's
       own `Settings` fields, e.g. `IUCN_API_TOKEN`/`NCBI_EMAIL`/
       `GOOGLE_SEARCH_API_KEY`) is unset -- never a registration-time failure.
-    - The 10 sandboxed action-tool categories (~145 tools, see
+    - The 10 sandboxed action-tool categories (131 tools, see
       `infrastructure/tools/`) need a real sandbox driver to execute
       against, so they are guarded the same way `register_skills` below is:
       a host where `get_sandbox_driver()` itself fails (missing/
@@ -367,6 +368,38 @@ async def close_vector_store() -> None:
     if _vector_store is not None:
         await _vector_store.close()
         _vector_store = None
+
+
+# Backs `LLMTaskPlanner`'s optional retrieval-based tool selection (see
+# `infrastructure/llm/tool_catalog_index.py`) -- a SEPARATE `QdrantVectorStore`
+# instance/collection from `_vector_store` above (`"<collection>_tool_catalog"`,
+# never the RAG document collection), same singleton rationale (owns a real
+# connection pool once real Qdrant infra is used).
+_tool_catalog_index: Optional[ToolCatalogIndex] = None
+
+
+def get_tool_catalog_index() -> ToolCatalogIndex:
+    """Returns the process-wide `ToolCatalogIndex` singleton, constructing it
+    on first call. `routes/tasks.py` is responsible for calling
+    `ensure_indexed(...)` on it with the current registry's tool names before
+    handing it to `LLMTaskPlanner` -- this function only builds the (initially
+    unindexed) wrapper, mirroring `get_vector_store()`'s split between
+    "construct the adapter" (here) and "populate it" (call site)."""
+    global _tool_catalog_index
+    if _tool_catalog_index is None:
+        _tool_catalog_index = ToolCatalogIndex(
+            QdrantVectorStore(collection=f"{settings.QDRANT_COLLECTION}_tool_catalog")
+        )
+    return _tool_catalog_index
+
+
+async def close_tool_catalog_index() -> None:
+    """Releases the singleton's real client connection pool, if one was ever
+    created. Called from `presentation/main.py`'s `lifespan` shutdown."""
+    global _tool_catalog_index
+    if _tool_catalog_index is not None:
+        await _tool_catalog_index.close()
+        _tool_catalog_index = None
 
 
 def get_graph_store() -> GraphStorePort:

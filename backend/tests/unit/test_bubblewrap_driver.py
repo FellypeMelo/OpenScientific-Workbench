@@ -417,6 +417,26 @@ def test_data_lake_not_bound_when_directory_missing(tmp_path, monkeypatch):
     assert "/datalake" not in argv
 
 
+def test_workspace_bound_read_write_so_action_tools_can_write_output(tmp_path, monkeypatch):
+    """Regression test: the workspace mount MUST be writable (`--bind`, not
+    `--ro-bind`) -- every sandboxed action tool (infrastructure/tools/*.py)
+    writes its declared output file/dir under /workspace/<output_dir> (see
+    run_in_sandbox), which would raise "Read-only file system" on every
+    single call if this mount were read-only, as it originally was before
+    those tools existed."""
+    monkeypatch.setattr(bw.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(bw.subprocess, "run", lambda argv, **kwargs: types.SimpleNamespace(returncode=0, stderr=b""))
+    monkeypatch.setattr(bw.os.path, "isdir", lambda p: p == str(tmp_path))
+
+    driver = BubblewrapSandboxDriver(runtime="bubblewrap", workspace_root=str(tmp_path))
+    argv = driver._bwrap_argv()
+
+    workspace_abs = bw.os.path.realpath(str(tmp_path))
+    idx = argv.index(workspace_abs)
+    assert argv[idx - 1] == "--bind"
+    assert argv[idx + 1] == "/workspace"
+
+
 def test_data_lake_root_defaults_from_settings(monkeypatch):
     monkeypatch.setattr(bw.settings, "DATA_LAKE_ROOT", "/configured-datalake")
     driver = BubblewrapSandboxDriver(runtime="mock")

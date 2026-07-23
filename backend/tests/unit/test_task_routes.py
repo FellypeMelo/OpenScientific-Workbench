@@ -84,6 +84,45 @@ class _FakeTaskClient:
         yield ""  # pragma: no cover - unreachable, makes this an async generator
 
 
+class _RaisingToolIndex:
+    """`ToolCatalogIndex`-shaped double whose `ensure_indexed` always raises
+    -- stands in for a real-but-unreachable Qdrant instance."""
+
+    usable = True
+
+    async def ensure_indexed(self, tool_names, descriptions):
+        raise ConnectionError("qdrant unreachable")
+
+    async def top_k(self, task_nl, k):  # pragma: no cover - not reached, ensure_indexed raises first
+        raise ConnectionError("qdrant unreachable")
+
+
+def test_submit_task_stream_survives_unreachable_tool_catalog_index(monkeypatch):
+    """`get_tool_catalog_index()`/`LLMTaskPlanner`'s retrieval step is an
+    optional enhancement over real (but here unconfigured/unreachable) Qdrant
+    infra -- a connection failure there must degrade gracefully, never take
+    down task submission (mirrors `routes/chat.py`'s RAG fail-soft try/except)."""
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.ModelClientFactory.get_client",
+        lambda provider_name: _FakeTaskClient(),
+    )
+    monkeypatch.setattr(
+        "src.presentation.routes.tasks.get_tool_catalog_index",
+        lambda: _RaisingToolIndex(),
+    )
+
+    session_id = _create_session()
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/tasks",
+        json={"task": "Align these genes", "execution_mode": "llm"},
+        headers=_AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert events[0]["event"] == "dag_planned"
+
+
 def test_submit_task_stream_emits_full_actor_critic_event_sequence(monkeypatch):
     monkeypatch.setattr(
         "src.presentation.routes.tasks.ModelClientFactory.get_client",

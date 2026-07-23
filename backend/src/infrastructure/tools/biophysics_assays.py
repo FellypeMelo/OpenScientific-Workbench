@@ -677,7 +677,17 @@ def analyze_itc_binding_thermodynamics(arguments: dict, driver) -> dict:
     or read from `itc_data_path` (CSV, first two columns) -- via
     `scipy.optimize.curve_fit`, recovering stoichiometry (n), association
     constant (Ka) / Kd, binding enthalpy (deltaH), and (from `temperature`)
-    the derived deltaG = -RT*ln(Ka) and deltaS = (deltaH - deltaG) / T."""
+    the derived deltaG = -RT*ln(Ka) and deltaS = (deltaH - deltaG) / T.
+
+    `ligand_concentration` is accepted for signature compatibility with the
+    catalog spec but is deliberately NOT used by this closed-form model:
+    `molar_ratio` (`itc_data`'s first column) already IS
+    [ligand]/[macromolecule] at each injection, so the ligand concentration
+    carries no additional information the fit needs -- `protein_concentration`
+    (`Mt` in the isotherm) is the only concentration term the Wiseman formula
+    actually takes. Silently ignoring an unused-but-accepted argument would
+    be exactly the kind of quiet no-op this catalog's tiering rules exist to
+    avoid; this docstring is that acknowledgment."""
     validated = AnalyzeItcBindingThermodynamicsArgs.model_validate(arguments or {})
     itc_data_path = (
         ensure_safe_relative_path(validated.itc_data_path) if validated.itc_data_path else None

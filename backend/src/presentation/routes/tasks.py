@@ -56,6 +56,7 @@ from src.domain.services.mcts_orchestrator import MCTSOrchestrator
 from src.infrastructure.llm.llm_node_executor import LLMNodeExecutor
 from src.infrastructure.llm.llm_task_planner import LLMTaskPlanner
 from src.infrastructure.llm.model_client_factory import ModelClientFactory
+from src.infrastructure.llm.tool_catalog_index import load_catalog_descriptions
 from src.infrastructure.sandbox.bubblewrap_driver import SandboxUnavailableError
 from src.presentation.dependencies import (
     get_artifact_repository,
@@ -64,6 +65,7 @@ from src.presentation.dependencies import (
     get_node_executor,
     get_sandbox_driver,
     get_session_repository,
+    get_tool_catalog_index,
     get_workspace_repository,
 )
 
@@ -137,11 +139,39 @@ async def submit_task_stream(
     # not new here.
     mcp_registry = get_mcp_registry()
     tool_names = list(getattr(mcp_registry, "registry", {}).keys())
+    # Semantic retrieval over that tool catalog (see
+    # `infrastructure/llm/tool_catalog_index.py`) -- `ensure_indexed` is a
+    # cheap no-op after the first call in this process (already-indexed
+    # guard) and after any call at all when Qdrant is in mock mode (no live
+    # infra configured), so `LLMTaskPlanner` transparently falls back to
+    # listing every tool name in that case, same as before this existed.
+    # `settings.QDRANT_ENABLED` being `True` only means "configured to try" --
+    # it does NOT mean a live Qdrant instance is actually reachable (this repo
+    # has no fixture/dependency-override seam for `get_tool_catalog_index()`,
+    # same direct-call shape as `get_mcp_registry()` above), so a real
+    # connection failure here must degrade to "skip retrieval this request",
+    # same fail-soft rationale as `routes/chat.py`'s RAG context lookup, never
+    # a 500 that takes down task submission over an optional enhancement.
+    tool_index = get_tool_catalog_index()
+    try:
+        await tool_index.ensure_indexed(tool_names, load_catalog_descriptions())
+    except Exception:
+        logger.warning(
+            "Tool-catalog indexing failed; LLMTaskPlanner will fall back to "
+            "listing every registered tool name instead of retrieval.",
+            exc_info=True,
+        )
 
     executor: NodeExecutorPort
     if request.execution_mode == "sandbox":
         try:
-            executor = get_node_executor(get_sandbox_driver(), mcp_registry)
+            # `get_sandbox_driver()` runs a real, blocking `bwrap --version`
+            # capability probe (up to 5s, see `BubblewrapSandboxDriver.
+            # __init__`/`_assert_bwrap_functional`) -- offloaded to a worker
+            # thread so it never stalls this process's single asyncio event
+            # loop (this route handler is `async def`) for that duration.
+            driver = await asyncio.to_thread(get_sandbox_driver)
+            executor = get_node_executor(driver, mcp_registry)
         except SandboxUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -173,7 +203,7 @@ async def submit_task_stream(
         )
 
     orchestrator = MCTSOrchestrator(
-        planner=LLMTaskPlanner(client, tool_names=tool_names),
+        planner=LLMTaskPlanner(client, tool_names=tool_names, tool_index=tool_index),
         executor=executor,
         on_plan=_on_plan,
         on_node_start=_on_node_start,

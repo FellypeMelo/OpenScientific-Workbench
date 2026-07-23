@@ -964,18 +964,19 @@ _diff_cmd = [
     '--d1', '1', '--d2', '1', '--o-prefix', _diff_prefix,
 ]
 _r = _subprocess.run(_diff_cmd, capture_output=True, text=True)
+if _r.returncode != 0:
+    raise RuntimeError(f"macs2 bdgdiff failed: {_r.stderr[-2000:]}")
 
 _treat_enriched = 0
 _ctrl_enriched = 0
-if _r.returncode == 0:
-    _cond1 = f"{_diff_prefix}_c3.0_cond1.bed"
-    _cond2 = f"{_diff_prefix}_c3.0_cond2.bed"
-    if _os.path.exists(_cond1):
-        with open(_cond1) as _fh:
-            _treat_enriched = sum(1 for _ in _fh)
-    if _os.path.exists(_cond2):
-        with open(_cond2) as _fh:
-            _ctrl_enriched = sum(1 for _ in _fh)
+_cond1 = f"{_diff_prefix}_c3.0_cond1.bed"
+_cond2 = f"{_diff_prefix}_c3.0_cond2.bed"
+if _os.path.exists(_cond1):
+    with open(_cond1) as _fh:
+        _treat_enriched = sum(1 for _ in _fh)
+if _os.path.exists(_cond2):
+    with open(_cond2) as _fh:
+        _ctrl_enriched = sum(1 for _ in _fh)
 
 print(_json.dumps({
     "treatment_peaks": _treat_peaks, "control_peaks": _ctrl_peaks,

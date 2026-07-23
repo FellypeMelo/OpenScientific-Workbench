@@ -334,9 +334,16 @@ class ModelClientFactory:
             return DeepSeekClient(api_key)
 
         elif provider_name in ["glm", "z.ai", "zhipu"]:
-            api_key = os.getenv("ZHIPU_GLM_API_KEY")
+            # NOT "ZHIPU_GLM_API_KEY" -- config.py's Settings.GLM_API_KEY,
+            # .env.example, and docker-compose.yml's x-backend-env anchor
+            # (the only thing that injects real env vars into the
+            # backend/worker containers) all use "GLM_API_KEY". A name
+            # mismatch here previously meant an operator following
+            # .env.example exactly still got a 400 on every glm/z.ai/zhipu
+            # request, unauthenticated env var never actually set.
+            api_key = os.getenv("GLM_API_KEY")
             if not api_key:
-                raise ValueError("Missing ZHIPU_GLM_API_KEY in environment variables.")
+                raise ValueError("Missing GLM_API_KEY in environment variables.")
             return ZhipuGLMClient(api_key)
 
         elif provider_name in ["claude", "anthropic"]:

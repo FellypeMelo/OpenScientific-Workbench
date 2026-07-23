@@ -19,9 +19,15 @@ Isolation profile (see ``_bwrap_argv``):
 - read-only bind of ``settings.DATA_LAKE_ROOT`` at ``/datalake``, when that
   directory exists on the host, for tools that read bundled reference
   datasets (see ``backend/data_lake/MANIFEST.md``);
-- the caller's workspace directory is bound READ-ONLY at ``/workspace``
-  inside the sandbox (this driver only ever needs to *read* an
-  already-materialized script/data from it -- see ``execute_python_script``);
+- the caller's workspace directory is bound READ-WRITE at ``/workspace``
+  inside the sandbox: this driver reads an already-materialized script/data
+  from it (see ``execute_python_script``), but every sandboxed action tool
+  (``infrastructure/tools/*.py``, via ``run_in_sandbox``) also WRITES its
+  declared output file/dir there (e.g. ``output_dir="./output"``-style
+  arguments resolve under this mount via ``--chdir /workspace`` below) --
+  read-only would make every such tool fail with "Read-only file system" the
+  instant it tried to save a result. Still scoped to exactly this one
+  per-session host directory, never any wider host path;
 - an isolated ``tmpfs`` at ``/tmp`` for scratch space the guest process can
   actually write to;
 - network isolation by default (``--unshare-net``) -- untrusted code should
@@ -227,7 +233,7 @@ class BubblewrapSandboxDriver:
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
-            "--ro-bind", workspace_abs, "/workspace",
+            "--bind", workspace_abs, "/workspace",
             "--chdir", "/workspace",
             "--unshare-pid",
             "--unshare-uts",
